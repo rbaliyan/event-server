@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package event.v1;
+
+option go_package = "github.com/rbaliyan/event-server/proto/event/v1;eventpb";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// EventService provides event pub-sub operations over gRPC.
+service EventService {
+  // RegisterEvent creates transport resources for a named event.
+  rpc RegisterEvent(RegisterEventRequest) returns (RegisterEventResponse) {
+    option (google.api.http) = { post: "/v1/events/{name}" };
+  }
+
+  // UnregisterEvent removes transport resources.
+  rpc UnregisterEvent(UnregisterEventRequest) returns (UnregisterEventResponse) {
+    option (google.api.http) = { delete: "/v1/events/{name}" };
+  }
+
+  // ListEvents returns all registered event names.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option (google.api.http) = { get: "/v1/events" };
+  }
+
+  // Publish sends a message to an event.
+  rpc Publish(PublishRequest) returns (PublishResponse) {
+    option (google.api.http) = {
+      post: "/v1/events/{event}/messages"
+      body: "*"
+    };
+  }
+
+  // Subscribe streams messages from an event (server-streaming).
+  // Messages include an ack_id for acknowledgment via the Ack RPC.
+  rpc Subscribe(SubscribeRequest) returns (stream Message);
+
+  // Ack acknowledges one or more messages (batch support).
+  rpc Ack(AckRequest) returns (AckResponse) {
+    option (google.api.http) = {
+      post: "/v1/ack"
+      body: "*"
+    };
+  }
+
+  // Health returns server and transport health status.
+  rpc Health(HealthRequest) returns (HealthResponse) {
+    option (google.api.http) = { get: "/v1/health" };
+  }
+}
+
+// DeliveryMode determines how messages are distributed to subscribers.
+enum DeliveryMode {
+  DELIVERY_MODE_UNSPECIFIED = 0;
+  DELIVERY_MODE_BROADCAST = 1;
+  DELIVERY_MODE_WORKER_POOL = 2;
+}
+
+// StartPosition determines where to start reading messages from.
+enum StartPosition {
+  START_POSITION_UNSPECIFIED = 0;
+  START_POSITION_BEGINNING = 1;
+  START_POSITION_LATEST = 2;
+  START_POSITION_TIMESTAMP = 3;
+}
+
+// HealthStatus represents the health state of the server.
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_HEALTHY = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+  HEALTH_STATUS_UNHEALTHY = 3;
+}
+
+// RegisterEventRequest is the request for RegisterEvent.
+message RegisterEventRequest {
+  string name = 1;
+}
+
+// RegisterEventResponse is the response for RegisterEvent.
+message RegisterEventResponse {}
+
+// UnregisterEventRequest is the request for UnregisterEvent.
+message UnregisterEventRequest {
+  string name = 1;
+}
+
+// UnregisterEventResponse is the response for UnregisterEvent.
+message UnregisterEventResponse {}
+
+// ListEventsRequest is the request for ListEvents.
+message ListEventsRequest {}
+
+// ListEventsResponse is the response for ListEvents.
+message ListEventsResponse {
+  repeated string events = 1;
+}
+
+// PublishRequest is the request for Publish.
+message PublishRequest {
+  // Event name to publish to.
+  string event = 1;
+  // Optional message ID. If empty, the server generates one.
+  string id = 2;
+  // Message payload as bytes.
+  bytes payload = 3;
+  // Optional key-value metadata.
+  map<string, string> metadata = 4;
+}
+
+// PublishResponse is the response for Publish.
+message PublishResponse {
+  // The message ID (generated if not provided).
+  string id = 1;
+}
+
+// SubscribeRequest is the request for Subscribe.
+message SubscribeRequest {
+  // Event name to subscribe to.
+  string event = 1;
+  // Delivery mode (broadcast or worker pool).
+  DeliveryMode delivery_mode = 2;
+  // Worker group name (only used with WORKER_POOL mode).
+  string worker_group = 3;
+  // Where to start reading messages.
+  StartPosition start_from = 4;
+  // Start time (used with START_POSITION_TIMESTAMP).
+  google.protobuf.Timestamp start_time = 5;
+  // Filter out messages older than this duration.
+  google.protobuf.Duration max_age = 6;
+  // Only deliver the most recent message (sampling mode).
+  bool latest_only = 7;
+  // Message channel buffer size (0 = transport default).
+  int32 buffer_size = 8;
+  // Stable consumer identifier for checkpoint resume.
+  string consumer_id = 9;
+}
+
+// Message is a streamed event message.
+message Message {
+  // Unique message identifier.
+  string id = 1;
+  // Source that published this message.
+  string source = 2;
+  // Message payload as bytes.
+  bytes payload = 3;
+  // Optional key-value metadata.
+  map<string, string> metadata = 4;
+  // When the message was created.
+  google.protobuf.Timestamp timestamp = 5;
+  // Number of times this message has been retried.
+  int32 retry_count = 6;
+  // Server-assigned ID for acknowledging this message.
+  string ack_id = 7;
+}
+
+// AckEntry is a single acknowledgment entry.
+message AckEntry {
+  // The ack_id from the received Message.
+  string ack_id = 1;
+  // Empty string for success, non-empty for nack (triggers redelivery).
+  string error = 2;
+}
+
+// AckRequest is the request for Ack.
+message AckRequest {
+  // One or more acknowledgment entries.
+  repeated AckEntry entries = 1;
+}
+
+// AckResponse is the response for Ack.
+message AckResponse {}
+
+// HealthRequest is the request for Health.
+message HealthRequest {}
+
+// HealthResponse is the response for Health.
+message HealthResponse {
+  HealthStatus status = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}

@@ -1,0 +1,9 @@
+[tools]
+go = "1.24.2"
+just = "latest"
+protoc = "29.3"
+"go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
+"go:google.golang.org/grpc/cmd/protoc-gen-go-grpc" = "latest"
+"go:github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway" = "latest"
+"go:github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2" = "latest"
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
