@@ -2,3 +2,25 @@ version: "2"
 
 run:
   tests: false
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (net/http.ResponseWriter).Write
+        - (github.com/rbaliyan/event/v3/transport.Message).Ack
+  exclusions:
+    rules:
+      - path: examples/
+        linters:
+          - errcheck
+          - unused
