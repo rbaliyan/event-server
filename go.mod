@@ -5,7 +5,7 @@ go 1.24.2
 toolchain go1.24.13
 
 require (
-	github.com/coder/websocket v1.8.12
+	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7
 	github.com/rbaliyan/event/v3 v3.7.11
