@@ -18,6 +18,7 @@ linters:
         - (net.Conn).Close
         - (net/http.ResponseWriter).Write
         - (github.com/rbaliyan/event/v3/transport.Message).Ack
+        - (*github.com/coder/websocket.Conn).Close
   exclusions:
     rules:
       - path: examples/
