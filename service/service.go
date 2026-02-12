@@ -37,10 +37,10 @@ type Service struct {
 }
 
 // NewService creates a new EventService.
-// Panics if transport is nil.
-func NewService(t transport.Transport, opts ...Option) *Service {
+// Returns an error if transport is nil.
+func NewService(t transport.Transport, opts ...Option) (*Service, error) {
 	if t == nil {
-		panic("event-server: NewService requires a non-nil transport")
+		return nil, fmt.Errorf("event-server: NewService requires a non-nil transport")
 	}
 	o := &serviceOptions{
 		authorizer: DenyAll(),
@@ -56,7 +56,7 @@ func NewService(t transport.Transport, opts ...Option) *Service {
 		ackTracker: newAckTracker(o.ackTimeout, o.logger),
 		logger:     o.logger,
 		events:     make(map[string]struct{}),
-	}
+	}, nil
 }
 
 // Stop stops the service and cleans up resources.

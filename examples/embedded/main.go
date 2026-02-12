@@ -31,13 +31,16 @@ func main() {
 	defer func() { _ = ch.Close(ctx) }()
 
 	// Create event service with custom authorizer
-	eventSvc := service.NewService(ch,
+	eventSvc, err := service.NewService(ch,
 		service.WithAuthorizer(&roleAuthorizer{
 			// admins can register/unregister, everyone can pub/sub
 			adminRoles: []string{"admin"},
 		}),
 		service.WithLogger(logger),
 	)
+	if err != nil {
+		log.Fatal("failed to create event service:", err)
+	}
 	defer eventSvc.Stop()
 
 	// Create gRPC server with auth interceptor
