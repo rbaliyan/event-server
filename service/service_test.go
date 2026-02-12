@@ -24,10 +24,13 @@ func setup(t *testing.T) (eventpb.EventServiceClient, func()) {
 	t.Helper()
 
 	ch := channel.New()
-	svc := service.NewService(ch,
+	svc, err := service.NewService(ch,
 		service.WithAuthorizer(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
@@ -221,9 +224,12 @@ func TestHealth(t *testing.T) {
 
 func TestDenyAllAuthorizer(t *testing.T) {
 	ch := channel.New()
-	svc := service.NewService(ch) // Default is DenyAll
+	svc, err := service.NewService(ch) // Default is DenyAll
 
 	lis := bufconn.Listen(bufSize)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 	srv := grpc.NewServer()
 	eventpb.RegisterEventServiceServer(srv, svc)
 	go func() { _ = srv.Serve(lis) }()
@@ -287,10 +293,13 @@ func TestSubscribeStreamClose(t *testing.T) {
 
 func TestAckTimeout(t *testing.T) {
 	ch := channel.New()
-	svc := service.NewService(ch,
+	svc, err := service.NewService(ch,
 		service.WithAuthorizer(service.AllowAll()),
 		service.WithAckTimeout(500*time.Millisecond),
 	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()

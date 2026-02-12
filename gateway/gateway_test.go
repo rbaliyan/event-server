@@ -214,10 +214,13 @@ func setupInProcess(t *testing.T) (*Handler, eventpb.EventServiceServer, func())
 	t.Helper()
 
 	ch := channel.New()
-	svc := service.NewService(ch,
+	svc, err := service.NewService(ch,
 		service.WithAuthorizer(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 
 	ctx := context.Background()
 	handler, err := NewInProcessHandler(ctx, svc)

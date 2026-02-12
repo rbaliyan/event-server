@@ -30,10 +30,14 @@ func main() {
 	defer func() { _ = ch.Close(ctx) }()
 
 	// Create the event service with AllowAll authorizer (for demo only!)
-	eventSvc := service.NewService(ch,
+	eventSvc, err := service.NewService(ch,
 		service.WithAuthorizer(service.AllowAll()),
 		service.WithLogger(logger),
 	)
+	if err != nil {
+		logger.Error("failed to create event service", "error", err)
+		os.Exit(1)
+	}
 	defer eventSvc.Stop()
 
 	// Create gRPC server with interceptors

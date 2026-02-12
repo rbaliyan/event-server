@@ -23,10 +23,13 @@ func setupServer(t *testing.T) (*grpc.ClientConn, func()) {
 	t.Helper()
 
 	ch := channel.New()
-	svc := service.NewService(ch,
+	svc, err := service.NewService(ch,
 		service.WithAuthorizer(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
 
 	lis := bufconn.Listen(bufSize)
 	srv := grpc.NewServer()
