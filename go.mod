@@ -8,7 +8,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.8
-	github.com/rbaliyan/event/v3 v3.8.0
+	github.com/rbaliyan/event/v3 v3.12.6
 	go.opentelemetry.io/otel/trace v1.40.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260209200024-4cfbd4190f57
 	google.golang.org/grpc v1.79.1
