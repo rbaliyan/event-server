@@ -31,8 +31,8 @@ github.com/klauspost/cpuid/v2 v2.0.9 h1:lgaqFMSdTdQYdZ04uHyN2d/eKdOMyi2YLSvlQIBF
 github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/rbaliyan/event/v3 v3.13.0 h1:bkTVXF5GDjlR9aRTkTUAyJpnkcLOJQqYCBenb24kOI4=
-github.com/rbaliyan/event/v3 v3.13.0/go.mod h1:FvsA8DtxVHH3G1PpR5CMF+pDjEGrWxYY+TadR7UG+PM=
+github.com/rbaliyan/event/v3 v3.15.2 h1:1bJ1ZVH7ZlUlEAOzWXbm0JoYWUNAUQ1zrEYZLQlM7lU=
+github.com/rbaliyan/event/v3 v3.15.2/go.mod h1:4/5e3rCCD5p2fBzbCnOGXe0xQR49jDdwIbI45j/VfYo=
 github.com/redis/go-redis/v9 v9.18.0 h1:pMkxYPkEbMPwRdenAzUNyFNrDgHx9U+DrBabWNfSRQs=
 github.com/redis/go-redis/v9 v9.18.0/go.mod h1:k3ufPphLU5YXwNTUcCRXGxUoF1fqxnhFQmscfkCoDA0=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
