@@ -1,5 +1,5 @@
 [tools]
-go = "1.24.2"
+go = "1.25"
 just = "latest"
 protoc = "29.3"
 "go:google.golang.org/protobuf/cmd/protoc-gen-go" = "latest"
