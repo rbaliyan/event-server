@@ -70,7 +70,7 @@ func (t *RemoteTransport) State() ConnState {
 
 func (t *RemoteTransport) setState(state ConnState) {
 	t.stateMu.Lock()
-	old := ConnState(t.state.Swap(int32(state)))
+	old := ConnState(t.state.Swap(int32(state))) // #nosec G115 -- value is bounded
 	if old != state && t.opts.onStateChange != nil {
 		t.opts.onStateChange(state)
 	}
@@ -292,7 +292,7 @@ func (t *RemoteTransport) retry(ctx context.Context, fn func(ctx context.Context
 
 	for attempt := 0; attempt <= t.opts.maxRetries; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(float64(backoff) * (0.5 + rand.Float64()))
+			jitter := time.Duration(float64(backoff) * (0.5 + rand.Float64())) // #nosec G404 -- jitter does not need crypto rand
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -377,7 +377,7 @@ func buildSubscribeRequest(name string, opts *transport.SubscribeOptions) *event
 	req.LatestOnly = opts.LatestOnly
 
 	if opts.BufferSize > 0 {
-		req.BufferSize = int32(opts.BufferSize)
+		req.BufferSize = int32(opts.BufferSize) // #nosec G115 -- value is bounded
 	}
 
 	req.ConsumerId = opts.ConsumerID

@@ -54,7 +54,7 @@ func main() {
 	eventpb.RegisterEventServiceServer(grpcServer, eventSvc)
 
 	// Start gRPC server
-	grpcLis, err := net.Listen("tcp", ":9090")
+	grpcLis, err := net.Listen("tcp", ":9090") // #nosec G102 -- example code, bind to all interfaces is intentional
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
