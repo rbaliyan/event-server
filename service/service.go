@@ -237,7 +237,7 @@ func (s *Service) Subscribe(req *eventpb.SubscribeRequest, stream eventpb.EventS
 				Source:     msg.Source(),
 				Payload:    msg.Payload(),
 				Metadata:   msg.Metadata(),
-				RetryCount: int32(msg.RetryCount()),
+				RetryCount: int32(msg.RetryCount()), // #nosec G115 -- value is bounded
 				AckId:      ackID,
 			}
 			if !msg.Timestamp().IsZero() {
