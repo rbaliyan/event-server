@@ -18,8 +18,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-var emptySpanContext trace.SpanContext
-
 var errAckTimeout = errors.New("ack timeout")
 
 // Service implements the EventService gRPC server.
@@ -30,6 +28,7 @@ type Service struct {
 	authorizer Authorizer
 	ackTracker *ackTracker
 	logger     *slog.Logger
+	metrics    *serviceMetrics
 
 	// Track registered events for ListEvents
 	eventsMu sync.RWMutex
@@ -55,6 +54,7 @@ func NewService(t transport.Transport, opts ...Option) (*Service, error) {
 		authorizer: o.authorizer,
 		ackTracker: newAckTracker(o.ackTimeout, o.logger),
 		logger:     o.logger,
+		metrics:    newServiceMetrics(),
 		events:     make(map[string]struct{}),
 	}, nil
 }
@@ -149,10 +149,14 @@ func (s *Service) Publish(ctx context.Context, req *eventpb.PublishRequest) (*ev
 		msgID = uuid.New().String()
 	}
 
-	msg := transport.NewMessage(msgID, sourceFromContext(ctx), req.Payload, req.Metadata, emptySpanContext)
+	start := time.Now()
+	spanCtx := trace.SpanFromContext(ctx).SpanContext()
+	msg := transport.NewMessage(msgID, sourceFromContext(ctx), req.Payload, req.Metadata, spanCtx)
 	if err := s.transport.Publish(ctx, req.Event, msg); err != nil {
+		s.metrics.recordPublish(ctx, req.Event, start, true)
 		return nil, toGRPCError(err)
 	}
+	s.metrics.recordPublish(ctx, req.Event, start, false)
 
 	return &eventpb.PublishResponse{Id: msgID}, nil
 }
@@ -218,6 +222,9 @@ func (s *Service) Subscribe(req *eventpb.SubscribeRequest, stream eventpb.EventS
 	}
 	defer func() { _ = sub.Close(ctx) }()
 
+	s.metrics.addStream(ctx, req.Event)
+	defer s.metrics.removeStream(ctx, req.Event)
+
 	streamID := uuid.New().String()
 	defer s.ackTracker.NackStream(streamID, fmt.Errorf("subscribe stream closed"))
 
@@ -247,6 +254,7 @@ func (s *Service) Subscribe(req *eventpb.SubscribeRequest, stream eventpb.EventS
 			if err := stream.Send(protoMsg); err != nil {
 				return err
 			}
+			s.metrics.recordMessageSent(ctx, req.Event)
 		}
 	}
 }
@@ -266,7 +274,9 @@ func (s *Service) Ack(ctx context.Context, req *eventpb.AckRequest) (*eventpb.Ac
 		if !s.ackTracker.Ack(entry.AckId, ackErr) {
 			s.logger.Debug("ack for unknown or expired ack_id",
 				"ack_id", entry.AckId)
+			continue
 		}
+		s.metrics.recordAck(ctx, ackErr != nil)
 	}
 
 	return &eventpb.AckResponse{}, nil
