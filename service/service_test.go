@@ -374,3 +374,59 @@ func TestAckTimeout(t *testing.T) {
 		t.Fatalf("Ack failed: %v", err)
 	}
 }
+
+// TestSubscribeStreamClose_PendingAckNacked verifies that when a Subscribe stream
+// closes, pending ack_ids are nacked by the ack tracker. A subsequent Ack call
+// for the same ack_id must succeed (idempotent) without finding the entry.
+func TestSubscribeStreamClose_PendingAckNacked(t *testing.T) {
+	client, cleanup := setup(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	_, err := client.RegisterEvent(ctx, &eventpb.RegisterEventRequest{Name: "close-test"})
+	if err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	stream, err := client.Subscribe(subCtx, &eventpb.SubscribeRequest{
+		Event:     "close-test",
+		StartFrom: eventpb.StartPosition_START_POSITION_LATEST,
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond) // let subscription establish
+
+	_, err = client.Publish(ctx, &eventpb.PublishRequest{
+		Event:   "close-test",
+		Payload: []byte(`"x"`),
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	msg, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	ackID := msg.AckId
+	if ackID == "" {
+		t.Fatal("expected non-empty ack_id")
+	}
+
+	// Cancel the stream — triggers NackStream(streamID, errStreamClosed) on the server.
+	cancel()
+	time.Sleep(100 * time.Millisecond) // allow NackStream to complete
+
+	// Ack after stream close: the ack_id was already consumed by NackStream.
+	// The Ack RPC must remain idempotent — no error, no panic.
+	_, err = client.Ack(ctx, &eventpb.AckRequest{
+		Entries: []*eventpb.AckEntry{{AckId: ackID}},
+	})
+	if err != nil {
+		t.Fatalf("Ack after stream close must be idempotent, got: %v", err)
+	}
+}
