@@ -18,7 +18,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-var errAckTimeout = errors.New("ack timeout")
+var (
+	errAckTimeout   = errors.New("ack timeout")
+	errStreamClosed = errors.New("subscribe stream closed")
+)
 
 // Service implements the EventService gRPC server.
 type Service struct {
@@ -226,7 +229,7 @@ func (s *Service) Subscribe(req *eventpb.SubscribeRequest, stream eventpb.EventS
 	defer s.metrics.removeStream(ctx, req.Event)
 
 	streamID := uuid.New().String()
-	defer s.ackTracker.NackStream(streamID, fmt.Errorf("subscribe stream closed"))
+	defer s.ackTracker.NackStream(streamID, errStreamClosed)
 
 	for {
 		select {

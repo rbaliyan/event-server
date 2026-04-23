@@ -60,12 +60,16 @@ func (m *serviceMetrics) recordPublish(ctx context.Context, event string, start 
 	if failed {
 		statusVal = "error"
 	}
-	opts := metric.WithAttributes(
+	// Counter carries status so operators can distinguish error rates.
+	// Histogram omits status so `sum(rate(...))` and quantile queries work
+	// without requiring a status filter.
+	m.publishTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("event", event),
 		attribute.String("status", statusVal),
-	)
-	m.publishTotal.Add(ctx, 1, opts)
-	m.publishDuration.Record(ctx, time.Since(start).Seconds(), opts)
+	))
+	m.publishDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
+		attribute.String("event", event),
+	))
 }
 
 func (m *serviceMetrics) addStream(ctx context.Context, event string) {
