@@ -43,6 +43,8 @@ go test -run TestName ./package/...
 
 ```
 event-server/
+├── cmd/
+│   └── eventctl/    # CLI tool: events + scheduler operations over REST
 ├── service/     # gRPC EventService implementation (authorizer, ack tracker, interceptors)
 ├── client/      # RemoteTransport implementing transport.Transport
 ├── gateway/     # HTTP handler: gRPC-Gateway (REST) + WebSocket + SSE
@@ -58,9 +60,30 @@ event-server/
     └── client/      # RemoteTransport + event.Bus usage
 ```
 
+### eventctl CLI (`cmd/eventctl`)
+
+Operational CLI for event-server and event-scheduler over HTTP/REST. Uses stdlib only (no extra go.mod deps). Install with `just install`.
+
+```
+eventctl [--server http://host:port] [--scheduler http://host:port] <command>
+
+events list                     List registered events
+events pub <event> [payload]    Publish a message ("-" reads from stdin)
+events sub <event>              Subscribe and stream messages (SSE, ctrl+c to stop)
+  [-start latest|beginning]
+events health                   Server health check
+
+scheduler list                  List scheduled messages
+  [-event <name>] [-limit <n>] [-before <RFC3339>] [-after <RFC3339>]
+scheduler get <id>              Get a scheduled message by ID
+scheduler health                Scheduler health check
+```
+
+The `--scheduler` flag defaults to `--server`, so when event-server and event-scheduler share a host the scheduler flag is only needed if the port differs.
+
 ### Core Components
 
-**Service (`service/service.go`)**: Implements `EventServiceServer`. Wraps a `transport.Transport` from event/v3. All RPCs go through an Authorizer. Subscribe streams messages via server-streaming with ack tracking.
+**Service (`service/service.go`)**: Implements `EventServiceServer`. Wraps a `transport.Transport` from event/v3. Auth is handled via a `SecurityGuard` wired through `UnaryInterceptor()`/`StreamInterceptor()`. Subscribe streams messages via server-streaming with ack tracking.
 
 **AckTracker (`service/ack_tracker.go`)**: Maps server-assigned ack IDs to transport-level message ack functions. Background reap goroutine cleans up stale entries (default: 30s timeout). NackStream() nacks all pending acks when a stream closes.
 
@@ -103,7 +126,7 @@ type options struct { /* unexported fields */ }
 
 ### Interface-Based Design
 
-- `service.Authorizer` for pluggable authorization
+- `service.SecurityGuard` for pluggable authentication + authorization
 - `transport.Transport` from event/v3 as the core abstraction
 - Gateway supports both remote (gRPC client) and in-process (direct service call) modes
 

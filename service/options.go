@@ -7,7 +7,7 @@ import (
 
 // serviceOptions holds configuration for the Service.
 type serviceOptions struct {
-	authorizer Authorizer
+	guard      SecurityGuard
 	logger     *slog.Logger
 	ackTimeout time.Duration
 }
@@ -15,10 +15,12 @@ type serviceOptions struct {
 // Option configures the Service.
 type Option func(*serviceOptions)
 
-// WithAuthorizer sets the authorizer for the service.
-func WithAuthorizer(a Authorizer) Option {
+// WithSecurityGuard sets the security guard for the service.
+// The guard handles both authentication (extracting identity from context)
+// and authorization (checking if the identity may perform the action).
+func WithSecurityGuard(g SecurityGuard) Option {
 	return func(o *serviceOptions) {
-		o.authorizer = a
+		o.guard = g
 	}
 }
 

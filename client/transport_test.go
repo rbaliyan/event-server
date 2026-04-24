@@ -24,7 +24,7 @@ func setupServer(t *testing.T) (*grpc.ClientConn, func()) {
 
 	ch := channel.New()
 	svc, err := service.NewService(ch,
-		service.WithAuthorizer(service.AllowAll()),
+		service.WithSecurityGuard(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
 	if err != nil {
@@ -32,7 +32,10 @@ func setupServer(t *testing.T) (*grpc.ClientConn, func()) {
 	}
 
 	lis := bufconn.Listen(bufSize)
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(
+		grpc.UnaryInterceptor(svc.UnaryInterceptor()),
+		grpc.StreamInterceptor(svc.StreamInterceptor()),
+	)
 	eventpb.RegisterEventServiceServer(srv, svc)
 	go func() { _ = srv.Serve(lis) }()
 

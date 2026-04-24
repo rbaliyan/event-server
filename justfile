@@ -29,6 +29,10 @@ proto-local:
         -I third_party/googleapis \
         proto/event/v1/event.proto
 
+# Build and install the eventctl binary to GOBIN
+install:
+    go install ./cmd/eventctl/...
+
 # Run tests
 test:
     go test -v ./...

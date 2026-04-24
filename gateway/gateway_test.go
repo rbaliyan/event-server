@@ -215,7 +215,7 @@ func setupInProcess(t *testing.T) (*Handler, eventpb.EventServiceServer, func())
 
 	ch := channel.New()
 	svc, err := service.NewService(ch,
-		service.WithAuthorizer(service.AllowAll()),
+		service.WithSecurityGuard(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
 	if err != nil {
