@@ -75,19 +75,21 @@ func main() {
     defer func() { _ = ch.Close(ctx) }()
 
     // Create event service
-    svc := service.NewService(ch,
-        service.WithAuthorizer(service.AllowAll()),
+    svc, _ := service.NewService(ch,
+        service.WithSecurityGuard(service.AllowAll()),
         service.WithLogger(logger),
     )
     defer svc.Stop()
 
-    // Start gRPC server
+    // Start gRPC server — wire auth interceptors first
     grpcServer := grpc.NewServer(
         grpc.ChainUnaryInterceptor(
+            svc.UnaryInterceptor(),
             service.LoggingInterceptor(logger),
             service.RecoveryInterceptor(logger),
         ),
         grpc.ChainStreamInterceptor(
+            svc.StreamInterceptor(),
             service.StreamLoggingInterceptor(logger),
             service.StreamRecoveryInterceptor(logger),
         ),
@@ -166,7 +168,7 @@ func main() {
 │                                                          │
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │                 service.Service                     │ │
-│  │  (gRPC EventService + Authorizer + AckTracker)      │ │
+│  │  (gRPC EventService + SecurityGuard + AckTracker)    │ │
 │  └────────────────────────┬────────────────────────────┘ │
 │                           │                              │
 │                    transport.Transport                   │
@@ -265,25 +267,43 @@ curl http://localhost:8080/v1/health
 ### `service` - gRPC Service Implementation
 
 ```go
-svc := service.NewService(transport,
-    service.WithAuthorizer(myAuth),    // Default: DenyAll()
-    service.WithLogger(logger),         // Default: slog.Default()
-    service.WithAckTimeout(30*time.Second), // Default: 30s
+svc, _ := service.NewService(transport,
+    service.WithSecurityGuard(myGuard),       // Default: DenyAll()
+    service.WithLogger(logger),               // Default: slog.Default()
+    service.WithAckTimeout(30*time.Second),   // Default: 30s
 )
 defer svc.Stop()
 ```
 
-**Authorizer interface:**
+**SecurityGuard interface:**
 
 ```go
-type Authorizer interface {
-    Authorize(ctx context.Context, req AuthRequest) error
+type SecurityGuard interface {
+    // Authenticate extracts identity from the incoming context (e.g. gRPC metadata).
+    Authenticate(ctx context.Context) (Identity, error)
+    // Authorize checks whether identity may perform action (the gRPC full method name).
+    Authorize(ctx context.Context, id Identity, action string) (Decision, error)
 }
 
-type AuthRequest struct {
-    Event     string
-    Operation Operation // Publish, Subscribe, Register, Unregister, List
+type Identity interface {
+    UserID() string
+    Claims() map[string]any
 }
+
+type Decision struct {
+    Allowed bool
+    Scope   string // e.g. "all", "owned", "tenant"
+    Reason  string // included in PermissionDenied error
+}
+```
+
+Wire auth into gRPC with the service's interceptors (must be registered on the server):
+
+```go
+grpcServer := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(svc.UnaryInterceptor(), ...),
+    grpc.ChainStreamInterceptor(svc.StreamInterceptor(), ...),
+)
 ```
 
 Built-in: `AllowAll()` (dev only), `DenyAll()` (default).

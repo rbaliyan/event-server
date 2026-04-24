@@ -8,71 +8,92 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Operation represents an event operation for authorization.
-type Operation int
-
-const (
-	OperationPublish Operation = iota
-	OperationSubscribe
-	OperationRegister
-	OperationUnregister
-	OperationList
-)
-
-func (o Operation) String() string {
-	switch o {
-	case OperationPublish:
-		return "publish"
-	case OperationSubscribe:
-		return "subscribe"
-	case OperationRegister:
-		return "register"
-	case OperationUnregister:
-		return "unregister"
-	case OperationList:
-		return "list"
-	default:
-		return "unknown"
-	}
+// Identity represents an authenticated caller.
+type Identity interface {
+	UserID() string
+	Claims() map[string]any
 }
 
-// AuthRequest contains information about an authorization request.
-type AuthRequest struct {
-	Event     string
-	Operation Operation
+// Decision is the result of an authorization check.
+type Decision struct {
+	Allowed bool
+	Scope   string // e.g. "all", "owned", "tenant"
+	Reason  string // human-readable explanation for denied requests
 }
 
-// Authorizer defines the interface for authorization decisions.
+// SecurityGuard handles authentication and authorization for incoming RPCs.
 // Implement this interface to integrate with your auth system.
 //
-// The context contains any authentication information extracted
-// by your authentication middleware (e.g., user ID, roles, claims).
-type Authorizer interface {
-	// Authorize checks if the operation is allowed.
-	// Return nil to allow, or an error (typically codes.PermissionDenied) to deny.
-	Authorize(ctx context.Context, req AuthRequest) error
+// Authenticate is called first to extract the caller's identity from the
+// incoming context (e.g. from gRPC metadata or JWT tokens). Authorize is
+// then called with the identity and the gRPC full method name as the action
+// (e.g. "/event.v1.EventService/Publish").
+//
+// Wire the guard into gRPC with Service.UnaryInterceptor() and
+// Service.StreamInterceptor().
+type SecurityGuard interface {
+	Authenticate(ctx context.Context) (Identity, error)
+	Authorize(ctx context.Context, id Identity, action string) (Decision, error)
 }
 
-// AllowAll returns an authorizer that permits all operations.
+type identityKey struct{}
+
+// contextWithIdentity stores the authenticated identity in the context.
+func contextWithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, identityKey{}, id)
+}
+
+// IdentityFromContext retrieves the authenticated identity from the context.
+// Returns false if no identity was stored (i.e. request did not pass through
+// the service interceptors).
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	id, ok := ctx.Value(identityKey{}).(Identity)
+	return id, ok
+}
+
+// AllowAll returns a SecurityGuard that permits all operations.
 // Use only for development/testing.
-func AllowAll() Authorizer {
-	return allowAllAuthorizer{}
+func AllowAll() SecurityGuard {
+	return allowAllGuard{}
 }
 
-type allowAllAuthorizer struct{}
+type allowAllGuard struct{}
 
-func (allowAllAuthorizer) Authorize(context.Context, AuthRequest) error {
-	return nil
+func (allowAllGuard) Authenticate(_ context.Context) (Identity, error) {
+	return &simpleIdentity{claims: map[string]any{}}, nil
 }
 
-// DenyAll returns an authorizer that denies all operations.
-// Useful as a fallback when no authorizer is configured.
-func DenyAll() Authorizer {
-	return denyAllAuthorizer{}
+func (allowAllGuard) Authorize(_ context.Context, _ Identity, _ string) (Decision, error) {
+	return Decision{Allowed: true, Scope: "all"}, nil
 }
 
-type denyAllAuthorizer struct{}
+// DenyAll returns a SecurityGuard that denies all operations.
+// This is the default when no guard is configured — forces explicit setup.
+func DenyAll() SecurityGuard {
+	return denyAllGuard{}
+}
 
-func (denyAllAuthorizer) Authorize(context.Context, AuthRequest) error {
-	return status.Errorf(codes.PermissionDenied, "no authorizer configured")
+type denyAllGuard struct{}
+
+func (denyAllGuard) Authenticate(_ context.Context) (Identity, error) {
+	return &simpleIdentity{claims: map[string]any{}}, nil
+}
+
+func (denyAllGuard) Authorize(_ context.Context, _ Identity, _ string) (Decision, error) {
+	return Decision{Allowed: false, Reason: "no security guard configured"}, nil
+}
+
+type simpleIdentity struct {
+	userID string
+	claims map[string]any
+}
+
+func (i *simpleIdentity) UserID() string         { return i.userID }
+func (i *simpleIdentity) Claims() map[string]any { return i.claims }
+
+func permissionDenied(d Decision) error {
+	if d.Reason != "" {
+		return status.Errorf(codes.PermissionDenied, "%s", d.Reason)
+	}
+	return status.Error(codes.PermissionDenied, "permission denied")
 }

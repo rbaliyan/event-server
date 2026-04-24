@@ -29,9 +29,9 @@ func main() {
 	ch := channel.New()
 	defer func() { _ = ch.Close(ctx) }()
 
-	// Create the event service with AllowAll authorizer (for demo only!)
+	// Create the event service with AllowAll guard (for demo only — configure a real guard in production)
 	eventSvc, err := service.NewService(ch,
-		service.WithAuthorizer(service.AllowAll()),
+		service.WithSecurityGuard(service.AllowAll()),
 		service.WithLogger(logger),
 	)
 	if err != nil {
@@ -43,10 +43,12 @@ func main() {
 	// Create gRPC server with interceptors
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
+			eventSvc.UnaryInterceptor(),
 			service.LoggingInterceptor(logger),
 			service.RecoveryInterceptor(logger),
 		),
 		grpc.ChainStreamInterceptor(
+			eventSvc.StreamInterceptor(),
 			service.StreamLoggingInterceptor(logger),
 			service.StreamRecoveryInterceptor(logger),
 		),

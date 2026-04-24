@@ -67,6 +67,30 @@ func (sw *sseWriter) writeRaw(s string) error {
 	return nil
 }
 
+// subscribeAction is the gRPC full method name for the Subscribe RPC.
+// Used by in-process handlers to apply the service's SecurityGuard
+// before delegating to svc.Subscribe.
+const subscribeAction = "/event.v1.EventService/Subscribe"
+
+// GuardedService is the optional interface an EventServiceServer may
+// implement to participate in SecurityGuard enforcement when invoked
+// directly (bypassing the gRPC interceptors). In-process gateway
+// handlers call ApplyGuard before delegating so that authentication and
+// authorization are not silently skipped.
+type GuardedService interface {
+	ApplyGuard(ctx context.Context, action string) (context.Context, error)
+}
+
+// applyInProcessGuard invokes svc's SecurityGuard when svc implements
+// GuardedService. When svc does not implement it (e.g. test fakes), the
+// context is returned unchanged.
+func applyInProcessGuard(ctx context.Context, svc eventpb.EventServiceServer, action string) (context.Context, error) {
+	if g, ok := svc.(GuardedService); ok {
+		return g.ApplyGuard(ctx, action)
+	}
+	return ctx, nil
+}
+
 // sseSubscribeStream implements the gRPC server-streaming interface
 // by writing SSE events to an http.ResponseWriter.
 type sseSubscribeStream struct {
@@ -129,29 +153,35 @@ func newInProcessSSEHandler(svc eventpb.EventServiceServer, heartbeat time.Durat
 
 		req := parseSubscribeQuery(eventName, r)
 
-		writeSSEHeaders(w, r, flusher)
-
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
 		ctx = httpHeadersToMetadata(ctx, r)
+
+		guardedCtx, err := applyInProcessGuard(ctx, svc, subscribeAction)
+		if err != nil {
+			writeHTTPError(w, err)
+			return
+		}
+
+		writeSSEHeaders(w, r, flusher)
 
 		sw := &sseWriter{w: w, flusher: flusher}
 		if err := writeStreamPreamble(sw); err != nil {
 			return
 		}
 
-		stream := &sseSubscribeStream{ctx: ctx, sw: sw}
+		stream := &sseSubscribeStream{ctx: guardedCtx, sw: sw}
 
 		hbDone := make(chan struct{})
 		go func() {
 			defer close(hbDone)
-			runHeartbeat(ctx, sw, heartbeat)
+			runHeartbeat(guardedCtx, sw, heartbeat)
 		}()
 
-		err := svc.Subscribe(req, stream)
-		if err != nil && ctx.Err() == nil {
-			writeSSEError(sw, err)
+		subErr := svc.Subscribe(req, stream)
+		if subErr != nil && guardedCtx.Err() == nil {
+			writeSSEError(sw, subErr)
 		}
 
 		cancel()

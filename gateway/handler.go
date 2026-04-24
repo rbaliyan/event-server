@@ -94,7 +94,7 @@ func NewHandler(ctx context.Context, grpcAddr string, opts ...Option) (*Handler,
 //
 // Example:
 //
-//	svc := service.NewService(transport, service.WithAuthorizer(auth))
+//	svc := service.NewService(transport, service.WithSecurityGuard(guard))
 //	handler, _ := gateway.NewInProcessHandler(ctx, svc)
 //	http.Handle("/", handler)
 func NewInProcessHandler(ctx context.Context, svc eventpb.EventServiceServer, opts ...Option) (*Handler, error) {

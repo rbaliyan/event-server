@@ -149,16 +149,24 @@ func newInProcessWSHandler(svc eventpb.EventServiceServer, heartbeat time.Durati
 			return
 		}
 
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		ctx = httpHeadersToMetadata(ctx, r)
+
+		guardedCtx, err := applyInProcessGuard(ctx, svc, subscribeAction)
+		if err != nil {
+			writeHTTPError(w, err)
+			return
+		}
+		ctx = guardedCtx
+
 		conn, err := websocket.Accept(w, r, wsAcceptOptions(originPatterns))
 		if err != nil {
 			return
 		}
 		defer conn.Close(websocket.StatusNormalClosure, "closing")
 
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		ctx = httpHeadersToMetadata(ctx, r)
 		req := parseSubscribeQuery(eventName, r)
 
 		// Use an adapter to collect messages from svc.Subscribe

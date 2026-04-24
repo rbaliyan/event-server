@@ -215,7 +215,7 @@ func setupInProcess(t *testing.T) (*Handler, eventpb.EventServiceServer, func())
 
 	ch := channel.New()
 	svc, err := service.NewService(ch,
-		service.WithAuthorizer(service.AllowAll()),
+		service.WithSecurityGuard(service.AllowAll()),
 		service.WithLogger(slog.Default()),
 	)
 	if err != nil {
@@ -420,5 +420,82 @@ func TestMethodNotAllowed(t *testing.T) {
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+// setupInProcessWithGuard builds an in-process gateway handler backed by a
+// service that uses the given SecurityGuard. Used to verify that in-process
+// SSE/WS subscribe paths honour the guard rather than silently bypassing it.
+func setupInProcessWithGuard(t *testing.T, guard service.SecurityGuard) (*Handler, func()) {
+	t.Helper()
+
+	ch := channel.New()
+	svc, err := service.NewService(ch,
+		service.WithSecurityGuard(guard),
+		service.WithLogger(slog.Default()),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	handler, err := NewInProcessHandler(context.Background(), svc)
+	if err != nil {
+		t.Fatalf("NewInProcessHandler: %v", err)
+	}
+	cleanup := func() {
+		_ = handler.Close()
+		svc.Stop()
+		_ = ch.Close(context.Background())
+	}
+	return handler, cleanup
+}
+
+// TestSSEInProcess_GuardDenies asserts that when the service's SecurityGuard
+// denies Subscribe, the in-process SSE handler returns 403 without opening
+// the event stream — i.e. it does NOT bypass the guard.
+func TestSSEInProcess_GuardDenies(t *testing.T) {
+	handler, cleanup := setupInProcessWithGuard(t, service.DenyAll())
+	defer cleanup()
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/v1/events/denied/stream", nil)
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SSE request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (guard must deny)", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, stream must not open on deny", ct)
+	}
+}
+
+// TestWSInProcess_GuardDenies asserts that when the service's SecurityGuard
+// denies Subscribe, the in-process WebSocket handler refuses the upgrade
+// (returns 403) instead of completing the handshake.
+func TestWSInProcess_GuardDenies(t *testing.T) {
+	handler, cleanup := setupInProcessWithGuard(t, service.DenyAll())
+	defer cleanup()
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/events/denied/subscribe"
+	_, resp, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err == nil {
+		t.Fatal("expected dial to fail under DenyAll")
+	}
+	if resp == nil {
+		t.Fatalf("expected HTTP response with denial, got nil (err=%v)", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (guard must deny)", resp.StatusCode)
 	}
 }

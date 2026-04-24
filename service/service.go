@@ -12,6 +12,7 @@ import (
 	"github.com/rbaliyan/event/v3/transport"
 	eventpb "github.com/rbaliyan/event-server/proto/event/v1"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -28,7 +29,7 @@ type Service struct {
 	eventpb.UnimplementedEventServiceServer
 
 	transport  transport.Transport
-	authorizer Authorizer
+	guard      SecurityGuard
 	ackTracker *ackTracker
 	logger     *slog.Logger
 	metrics    *serviceMetrics
@@ -45,7 +46,7 @@ func NewService(t transport.Transport, opts ...Option) (*Service, error) {
 		return nil, fmt.Errorf("event-server: NewService requires a non-nil transport")
 	}
 	o := &serviceOptions{
-		authorizer: DenyAll(),
+		guard:      DenyAll(),
 		logger:     slog.Default(),
 		ackTimeout: 30 * time.Second,
 	}
@@ -54,7 +55,7 @@ func NewService(t transport.Transport, opts ...Option) (*Service, error) {
 	}
 	return &Service{
 		transport:  t,
-		authorizer: o.authorizer,
+		guard:      o.guard,
 		ackTracker: newAckTracker(o.ackTimeout, o.logger),
 		logger:     o.logger,
 		metrics:    newServiceMetrics(),
@@ -74,13 +75,6 @@ func (s *Service) RegisterEvent(ctx context.Context, req *eventpb.RegisterEventR
 		return nil, status.Error(codes.InvalidArgument, "event name is required")
 	}
 
-	if err := s.authorizer.Authorize(ctx, AuthRequest{
-		Event:     req.Name,
-		Operation: OperationRegister,
-	}); err != nil {
-		return nil, err
-	}
-
 	if err := s.transport.RegisterEvent(ctx, req.Name); err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -98,13 +92,6 @@ func (s *Service) UnregisterEvent(ctx context.Context, req *eventpb.UnregisterEv
 		return nil, status.Error(codes.InvalidArgument, "event name is required")
 	}
 
-	if err := s.authorizer.Authorize(ctx, AuthRequest{
-		Event:     req.Name,
-		Operation: OperationUnregister,
-	}); err != nil {
-		return nil, err
-	}
-
 	if err := s.transport.UnregisterEvent(ctx, req.Name); err != nil {
 		return nil, toGRPCError(err)
 	}
@@ -118,12 +105,6 @@ func (s *Service) UnregisterEvent(ctx context.Context, req *eventpb.UnregisterEv
 
 // ListEvents returns all registered event names.
 func (s *Service) ListEvents(ctx context.Context, req *eventpb.ListEventsRequest) (*eventpb.ListEventsResponse, error) {
-	if err := s.authorizer.Authorize(ctx, AuthRequest{
-		Operation: OperationList,
-	}); err != nil {
-		return nil, err
-	}
-
 	s.eventsMu.RLock()
 	events := make([]string, 0, len(s.events))
 	for name := range s.events {
@@ -138,13 +119,6 @@ func (s *Service) ListEvents(ctx context.Context, req *eventpb.ListEventsRequest
 func (s *Service) Publish(ctx context.Context, req *eventpb.PublishRequest) (*eventpb.PublishResponse, error) {
 	if req.Event == "" {
 		return nil, status.Error(codes.InvalidArgument, "event name is required")
-	}
-
-	if err := s.authorizer.Authorize(ctx, AuthRequest{
-		Event:     req.Event,
-		Operation: OperationPublish,
-	}); err != nil {
-		return nil, err
 	}
 
 	msgID := req.Id
@@ -170,13 +144,6 @@ func (s *Service) Subscribe(req *eventpb.SubscribeRequest, stream eventpb.EventS
 
 	if req.Event == "" {
 		return status.Error(codes.InvalidArgument, "event name is required")
-	}
-
-	if err := s.authorizer.Authorize(ctx, AuthRequest{
-		Event:     req.Event,
-		Operation: OperationSubscribe,
-	}); err != nil {
-		return err
 	}
 
 	// Build subscribe options from proto request
@@ -316,6 +283,77 @@ func (s *Service) Health(ctx context.Context, req *eventpb.HealthRequest) (*even
 
 	return resp, nil
 }
+
+// healthMethod is the full method name for the Health RPC. It is exempt from
+// authentication and authorization so that liveness/readiness probes remain
+// reachable even when no SecurityGuard is configured (the default DenyAll
+// would otherwise deny all traffic, including probes).
+const healthMethod = "/event.v1.EventService/Health"
+
+// ApplyGuard authenticates the caller and authorizes the given action using
+// the service's SecurityGuard. It returns the context enriched with the
+// resolved Identity on success, or a gRPC status error on failure.
+//
+// In-process callers (e.g. WebSocket/SSE handlers that invoke Service methods
+// directly without passing through the gRPC interceptors) must call this
+// before delegating to any guarded method. Actions passed here should match
+// the gRPC full-method form used by the interceptors, e.g.
+// "/event.v1.EventService/Subscribe".
+func (s *Service) ApplyGuard(ctx context.Context, action string) (context.Context, error) {
+	if action == healthMethod {
+		return ctx, nil
+	}
+	id, err := s.guard.Authenticate(ctx)
+	if err != nil {
+		s.logger.Warn("authentication failed", "method", action, "error", err)
+		return ctx, status.Error(codes.Unauthenticated, "authentication failed")
+	}
+	ctx = contextWithIdentity(ctx, id)
+	d, err := s.guard.Authorize(ctx, id, action)
+	if err != nil {
+		s.logger.Error("authorization error", "method", action, "error", err)
+		return ctx, status.Error(codes.Internal, "authorization error")
+	}
+	if !d.Allowed {
+		return ctx, permissionDenied(d)
+	}
+	return ctx, nil
+}
+
+// UnaryInterceptor returns a gRPC unary server interceptor that authenticates
+// and authorizes every unary RPC using the service's SecurityGuard.
+// The Health RPC is exempt so that liveness probes remain reachable.
+// Wire it into the gRPC server: grpc.NewServer(grpc.UnaryInterceptor(svc.UnaryInterceptor())).
+func (s *Service) UnaryInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		newCtx, err := s.ApplyGuard(ctx, info.FullMethod)
+		if err != nil {
+			return nil, err
+		}
+		return handler(newCtx, req)
+	}
+}
+
+// StreamInterceptor returns a gRPC stream server interceptor that authenticates
+// and authorizes every streaming RPC using the service's SecurityGuard.
+// The Health RPC is exempt so that liveness probes remain reachable.
+// Wire it into the gRPC server: grpc.NewServer(grpc.StreamInterceptor(svc.StreamInterceptor())).
+func (s *Service) StreamInterceptor() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		newCtx, err := s.ApplyGuard(ss.Context(), info.FullMethod)
+		if err != nil {
+			return err
+		}
+		return handler(srv, &wrappedStream{ServerStream: ss, ctx: newCtx})
+	}
+}
+
+type wrappedStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (w *wrappedStream) Context() context.Context { return w.ctx }
 
 // sourceFromContext extracts the publisher source from gRPC metadata.
 // Clients can set this via the "x-source" metadata header.
