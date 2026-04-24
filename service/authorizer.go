@@ -60,7 +60,7 @@ func AllowAll() SecurityGuard {
 type allowAllGuard struct{}
 
 func (allowAllGuard) Authenticate(_ context.Context) (Identity, error) {
-	return &simpleIdentity{}, nil
+	return &simpleIdentity{claims: map[string]any{}}, nil
 }
 
 func (allowAllGuard) Authorize(_ context.Context, _ Identity, _ string) (Decision, error) {
@@ -76,7 +76,7 @@ func DenyAll() SecurityGuard {
 type denyAllGuard struct{}
 
 func (denyAllGuard) Authenticate(_ context.Context) (Identity, error) {
-	return &simpleIdentity{}, nil
+	return &simpleIdentity{claims: map[string]any{}}, nil
 }
 
 func (denyAllGuard) Authorize(_ context.Context, _ Identity, _ string) (Decision, error) {

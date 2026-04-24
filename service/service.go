@@ -284,46 +284,67 @@ func (s *Service) Health(ctx context.Context, req *eventpb.HealthRequest) (*even
 	return resp, nil
 }
 
+// healthMethod is the full method name for the Health RPC. It is exempt from
+// authentication and authorization so that liveness/readiness probes remain
+// reachable even when no SecurityGuard is configured (the default DenyAll
+// would otherwise deny all traffic, including probes).
+const healthMethod = "/event.v1.EventService/Health"
+
+// ApplyGuard authenticates the caller and authorizes the given action using
+// the service's SecurityGuard. It returns the context enriched with the
+// resolved Identity on success, or a gRPC status error on failure.
+//
+// In-process callers (e.g. WebSocket/SSE handlers that invoke Service methods
+// directly without passing through the gRPC interceptors) must call this
+// before delegating to any guarded method. Actions passed here should match
+// the gRPC full-method form used by the interceptors, e.g.
+// "/event.v1.EventService/Subscribe".
+func (s *Service) ApplyGuard(ctx context.Context, action string) (context.Context, error) {
+	if action == healthMethod {
+		return ctx, nil
+	}
+	id, err := s.guard.Authenticate(ctx)
+	if err != nil {
+		s.logger.Warn("authentication failed", "method", action, "error", err)
+		return ctx, status.Error(codes.Unauthenticated, "authentication failed")
+	}
+	ctx = contextWithIdentity(ctx, id)
+	d, err := s.guard.Authorize(ctx, id, action)
+	if err != nil {
+		s.logger.Error("authorization error", "method", action, "error", err)
+		return ctx, status.Error(codes.Internal, "authorization error")
+	}
+	if !d.Allowed {
+		return ctx, permissionDenied(d)
+	}
+	return ctx, nil
+}
+
 // UnaryInterceptor returns a gRPC unary server interceptor that authenticates
 // and authorizes every unary RPC using the service's SecurityGuard.
+// The Health RPC is exempt so that liveness probes remain reachable.
 // Wire it into the gRPC server: grpc.NewServer(grpc.UnaryInterceptor(svc.UnaryInterceptor())).
 func (s *Service) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		id, err := s.guard.Authenticate(ctx)
+		newCtx, err := s.ApplyGuard(ctx, info.FullMethod)
 		if err != nil {
-			return nil, status.Errorf(codes.Unauthenticated, "authentication failed: %v", err)
+			return nil, err
 		}
-		ctx = contextWithIdentity(ctx, id)
-		d, err := s.guard.Authorize(ctx, id, info.FullMethod)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "authorization error: %v", err)
-		}
-		if !d.Allowed {
-			return nil, permissionDenied(d)
-		}
-		return handler(ctx, req)
+		return handler(newCtx, req)
 	}
 }
 
 // StreamInterceptor returns a gRPC stream server interceptor that authenticates
 // and authorizes every streaming RPC using the service's SecurityGuard.
+// The Health RPC is exempt so that liveness probes remain reachable.
 // Wire it into the gRPC server: grpc.NewServer(grpc.StreamInterceptor(svc.StreamInterceptor())).
 func (s *Service) StreamInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		ctx := ss.Context()
-		id, err := s.guard.Authenticate(ctx)
+		newCtx, err := s.ApplyGuard(ss.Context(), info.FullMethod)
 		if err != nil {
-			return status.Errorf(codes.Unauthenticated, "authentication failed: %v", err)
+			return err
 		}
-		ctx = contextWithIdentity(ctx, id)
-		d, err := s.guard.Authorize(ctx, id, info.FullMethod)
-		if err != nil {
-			return status.Errorf(codes.Internal, "authorization error: %v", err)
-		}
-		if !d.Allowed {
-			return permissionDenied(d)
-		}
-		return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})
+		return handler(srv, &wrappedStream{ServerStream: ss, ctx: newCtx})
 	}
 }
 

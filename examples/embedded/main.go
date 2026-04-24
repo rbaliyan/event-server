@@ -21,6 +21,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// adminActions lists the gRPC full method names that require admin privileges.
+// Using a map (vs switch) scales cleanly as more admin actions are added and
+// makes the permission surface trivial to audit.
+var adminActions = map[string]struct{}{
+	"/event.v1.EventService/RegisterEvent":   {},
+	"/event.v1.EventService/UnregisterEvent": {},
+}
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -47,9 +55,12 @@ func main() {
 	defer eventSvc.Stop()
 
 	// Wire the service's auth interceptors alongside any other interceptors.
+	// auditInterceptor runs AFTER the service's UnaryInterceptor so the
+	// authenticated identity is already attached to the context.
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			eventSvc.UnaryInterceptor(),
+			auditInterceptor(logger),
 			service.LoggingInterceptor(logger),
 		),
 		grpc.ChainStreamInterceptor(
@@ -100,20 +111,33 @@ func (g *roleGuard) Authenticate(ctx context.Context) (service.Identity, error) 
 }
 
 func (g *roleGuard) Authorize(_ context.Context, id service.Identity, action string) (service.Decision, error) {
-	role := id.UserID()
-	switch action {
-	case "/event.v1.EventService/RegisterEvent", "/event.v1.EventService/UnregisterEvent":
-		for _, admin := range g.adminRoles {
-			if role == admin {
-				return service.Decision{Allowed: true, Scope: "admin"}, nil
-			}
-		}
-		return service.Decision{
-			Allowed: false,
-			Reason:  fmt.Sprintf("role %q cannot manage events", role),
-		}, nil
+	if _, adminOnly := adminActions[action]; !adminOnly {
+		return service.Decision{Allowed: true, Scope: "all"}, nil
 	}
-	return service.Decision{Allowed: true, Scope: "all"}, nil
+	role := id.UserID()
+	for _, admin := range g.adminRoles {
+		if role == admin {
+			return service.Decision{Allowed: true, Scope: "admin"}, nil
+		}
+	}
+	return service.Decision{
+		Allowed: false,
+		Reason:  fmt.Sprintf("role %q cannot manage events", role),
+	}, nil
+}
+
+// auditInterceptor demonstrates how downstream interceptors can retrieve the
+// authenticated identity populated by the event service's guard. The identity
+// is attached to the context by UnaryInterceptor/StreamInterceptor before the
+// handler runs, so chained interceptors (logging, audit, tenant scoping) can
+// inspect it via service.IdentityFromContext.
+func auditInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if id, ok := service.IdentityFromContext(ctx); ok {
+			logger.Info("rpc", "method", info.FullMethod, "caller", id.UserID())
+		}
+		return handler(ctx, req)
+	}
 }
 
 type roleIdentity struct {

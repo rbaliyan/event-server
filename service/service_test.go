@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -381,6 +382,209 @@ func TestAckTimeout(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Ack failed: %v", err)
+	}
+}
+
+// stubGuard lets tests inject arbitrary Authenticate/Authorize results.
+type stubGuard struct {
+	authNErr error
+	authZErr error
+	decision service.Decision
+	identity service.Identity
+}
+
+func (g *stubGuard) Authenticate(context.Context) (service.Identity, error) {
+	if g.authNErr != nil {
+		return nil, g.authNErr
+	}
+	if g.identity != nil {
+		return g.identity, nil
+	}
+	return service.AllowAll().Authenticate(context.Background())
+}
+
+func (g *stubGuard) Authorize(context.Context, service.Identity, string) (service.Decision, error) {
+	if g.authZErr != nil {
+		return service.Decision{}, g.authZErr
+	}
+	if g.decision == (service.Decision{}) {
+		return service.Decision{Allowed: true, Scope: "all"}, nil
+	}
+	return g.decision, nil
+}
+
+// setupWithGuard builds a bufconn-backed service using the given guard. The
+// returned cleanup function releases all resources.
+func setupWithGuard(t *testing.T, guard service.SecurityGuard) (eventpb.EventServiceClient, func()) {
+	t.Helper()
+
+	ch := channel.New()
+	svc, err := service.NewService(ch, service.WithSecurityGuard(guard))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpc.NewServer(
+		grpc.UnaryInterceptor(svc.UnaryInterceptor()),
+		grpc.StreamInterceptor(svc.StreamInterceptor()),
+	)
+	eventpb.RegisterEventServiceServer(srv, svc)
+	go func() { _ = srv.Serve(lis) }()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	client := eventpb.NewEventServiceClient(conn)
+	cleanup := func() {
+		_ = conn.Close()
+		srv.Stop()
+		svc.Stop()
+		_ = ch.Close(context.Background())
+	}
+	return client, cleanup
+}
+
+// TestInterceptor_AuthenticateError asserts that an Authenticate error is
+// surfaced as codes.Unauthenticated with a generic message (no internals).
+func TestInterceptor_AuthenticateError(t *testing.T) {
+	client, cleanup := setupWithGuard(t, &stubGuard{
+		authNErr: errors.New("bad jwt signature kid=abc123"),
+	})
+	defer cleanup()
+
+	_, err := client.RegisterEvent(context.Background(), &eventpb.RegisterEventRequest{Name: "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("not a status error: %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", st.Code())
+	}
+	if st.Message() != "authentication failed" {
+		t.Fatalf("message leaked guard internals: %q", st.Message())
+	}
+}
+
+// TestInterceptor_AuthorizeError asserts that an Authorize error is surfaced
+// as codes.Internal with a generic message.
+func TestInterceptor_AuthorizeError(t *testing.T) {
+	client, cleanup := setupWithGuard(t, &stubGuard{
+		authZErr: errors.New("policy backend unreachable dsn=postgres://user:pw@db"),
+	})
+	defer cleanup()
+
+	_, err := client.RegisterEvent(context.Background(), &eventpb.RegisterEventRequest{Name: "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("not a status error: %v", err)
+	}
+	if st.Code() != codes.Internal {
+		t.Fatalf("code = %v, want Internal", st.Code())
+	}
+	if st.Message() != "authorization error" {
+		t.Fatalf("message leaked guard internals: %q", st.Message())
+	}
+}
+
+// TestInterceptor_DecisionDenied asserts that a denied Decision propagates its
+// Reason as the PermissionDenied message.
+func TestInterceptor_DecisionDenied(t *testing.T) {
+	client, cleanup := setupWithGuard(t, &stubGuard{
+		decision: service.Decision{Allowed: false, Reason: "tenant quota exceeded"},
+	})
+	defer cleanup()
+
+	_, err := client.RegisterEvent(context.Background(), &eventpb.RegisterEventRequest{Name: "x"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("not a status error: %v", err)
+	}
+	if st.Code() != codes.PermissionDenied {
+		t.Fatalf("code = %v, want PermissionDenied", st.Code())
+	}
+	if st.Message() != "tenant quota exceeded" {
+		t.Fatalf("message = %q, want decision reason", st.Message())
+	}
+}
+
+// TestInterceptor_HealthExempt asserts that Health remains reachable under the
+// default DenyAll guard so that liveness probes continue to work.
+func TestInterceptor_HealthExempt(t *testing.T) {
+	client, cleanup := setupWithGuard(t, service.DenyAll())
+	defer cleanup()
+
+	resp, err := client.Health(context.Background(), &eventpb.HealthRequest{})
+	if err != nil {
+		t.Fatalf("Health under DenyAll must succeed, got: %v", err)
+	}
+	if resp.Status != eventpb.HealthStatus_HEALTH_STATUS_HEALTHY {
+		t.Fatalf("status = %v, want HEALTHY", resp.Status)
+	}
+
+	// Sanity-check: another RPC is still denied under DenyAll.
+	_, err = client.RegisterEvent(context.Background(), &eventpb.RegisterEventRequest{Name: "x"})
+	if st, ok := status.FromError(err); !ok || st.Code() != codes.PermissionDenied {
+		t.Fatalf("RegisterEvent under DenyAll should be denied, got: %v", err)
+	}
+}
+
+// TestApplyGuard_AllowAllPopulatesIdentity verifies ApplyGuard returns an
+// identity-bearing context on success, enabling in-process callers to
+// observe the identity via IdentityFromContext.
+func TestApplyGuard_AllowAllPopulatesIdentity(t *testing.T) {
+	ch := channel.New()
+	defer func() { _ = ch.Close(context.Background()) }()
+
+	svc, err := service.NewService(ch, service.WithSecurityGuard(service.AllowAll()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Stop()
+
+	ctx, err := svc.ApplyGuard(context.Background(), "/event.v1.EventService/Publish")
+	if err != nil {
+		t.Fatalf("ApplyGuard: %v", err)
+	}
+	id, ok := service.IdentityFromContext(ctx)
+	if !ok {
+		t.Fatal("expected identity in context")
+	}
+	if id.Claims() == nil {
+		t.Fatal("AllowAll identity must return a non-nil Claims map")
+	}
+}
+
+// TestApplyGuard_HealthExempt verifies the Health full method name is
+// treated as exempt and does not invoke the guard.
+func TestApplyGuard_HealthExempt(t *testing.T) {
+	ch := channel.New()
+	defer func() { _ = ch.Close(context.Background()) }()
+
+	svc, err := service.NewService(ch) // default DenyAll
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Stop()
+
+	if _, err := svc.ApplyGuard(context.Background(), "/event.v1.EventService/Health"); err != nil {
+		t.Fatalf("ApplyGuard Health must not fail under DenyAll, got: %v", err)
 	}
 }
 
