@@ -486,7 +486,7 @@ func (c *cli) schemaDelete(name string) error {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func httpGet(u string) (*http.Response, error) {
-	return http.Get(u) //nolint:noctx
+	return http.Get(u) // #nosec G107 -- CLI tool; URL is caller-supplied via --server flag
 }
 
 // checkStatus returns an error for non-2xx responses, including the body.
