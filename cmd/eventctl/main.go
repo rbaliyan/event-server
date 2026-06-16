@@ -90,20 +90,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	sched := *schedulerAddr
-	if sched == "" {
-		sched = *serverAddr
-	}
-	schm := *schemaAddr
-	if schm == "" {
-		schm = *serverAddr
-	}
-
-	c := &cli{
-		server:    strings.TrimRight(*serverAddr, "/"),
-		scheduler: strings.TrimRight(sched, "/"),
-		schema:    strings.TrimRight(schm, "/"),
-	}
+	c := newCLI(*serverAddr, *schedulerAddr, *schemaAddr)
 
 	if err := c.run(args); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -115,6 +102,25 @@ type cli struct {
 	server    string
 	scheduler string
 	schema    string
+}
+
+// newCLI builds a cli from the raw address flags, defaulting the scheduler and
+// schema addresses to the server address when empty and trimming trailing
+// slashes.
+func newCLI(serverAddr, schedulerAddr, schemaAddr string) *cli {
+	sched := schedulerAddr
+	if sched == "" {
+		sched = serverAddr
+	}
+	schm := schemaAddr
+	if schm == "" {
+		schm = serverAddr
+	}
+	return &cli{
+		server:    strings.TrimRight(serverAddr, "/"),
+		scheduler: strings.TrimRight(sched, "/"),
+		schema:    strings.TrimRight(schm, "/"),
+	}
 }
 
 func (c *cli) run(args []string) error {
@@ -275,6 +281,10 @@ func (c *cli) eventsHealth() error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if err := checkStatus(resp); err != nil {
+		return err
+	}
 	return printJSON(resp.Body)
 }
 

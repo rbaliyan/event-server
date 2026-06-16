@@ -26,6 +26,10 @@ type ackTracker struct {
 	logger  *slog.Logger
 	stopCh  chan struct{}
 	done    chan struct{}
+
+	// now returns the current time; overridable in tests for deterministic
+	// reaping. Defaults to time.Now.
+	now func() time.Time
 }
 
 // newAckTracker creates a new ack tracker with the given timeout.
@@ -37,6 +41,7 @@ func newAckTracker(timeout time.Duration, logger *slog.Logger) *ackTracker {
 		logger:  logger,
 		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
+		now:     time.Now,
 	}
 	go t.reapLoop()
 	return t
@@ -48,7 +53,7 @@ func (t *ackTracker) Track(streamID string, ackFn func(error) error) string {
 	t.mu.Lock()
 	t.entries[id] = &ackEntry{
 		ackFn:     ackFn,
-		createdAt: time.Now(),
+		createdAt: t.now(),
 		streamID:  streamID,
 	}
 	t.mu.Unlock()
@@ -140,7 +145,7 @@ func (t *ackTracker) reapLoop() {
 }
 
 func (t *ackTracker) reap() {
-	now := time.Now()
+	now := t.now()
 	t.mu.Lock()
 	var stale []*ackEntry
 	for id, entry := range t.entries {

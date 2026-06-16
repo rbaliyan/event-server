@@ -125,6 +125,28 @@ func TestEventsSub(t *testing.T) {
 	}
 }
 
+// TestEventsHealth_Unhealthy asserts that a non-2xx health response is surfaced
+// as an error rather than printed as if successful.
+func TestEventsHealth_Unhealthy(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": "transport down"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &cli{server: srv.URL, scheduler: srv.URL}
+
+	err := c.eventsHealth()
+	if err == nil {
+		t.Fatal("expected error for 503 health response, got nil")
+	}
+	if !strings.Contains(err.Error(), "transport down") {
+		t.Errorf("expected server error message, got: %v", err)
+	}
+}
+
 func TestEventsHealth(t *testing.T) {
 	srv := newFakeServer(t)
 	defer srv.Close()

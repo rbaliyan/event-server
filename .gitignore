@@ -11,6 +11,9 @@ coverage.html
 *.so
 *.dylib
 
+# Compiled eventctl CLI binary (built via `go build -o eventctl ./cmd/eventctl`)
+/eventctl
+
 # Go workspace
 go.work
 go.work.sum

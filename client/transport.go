@@ -13,6 +13,7 @@ import (
 	eventpb "github.com/rbaliyan/event-server/proto/event/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -34,6 +35,10 @@ type RemoteTransport struct {
 	circuitOpen     bool
 	circuitOpenAt   time.Time
 	consecutiveFail int
+
+	// now returns the current time; overridable in tests for deterministic
+	// circuit-breaker timing. Defaults to time.Now.
+	now func() time.Time
 
 	// Shutdown
 	closeOnce sync.Once
@@ -57,6 +62,7 @@ func New(addr string, opts ...Option) (*RemoteTransport, error) {
 	t := &RemoteTransport{
 		addr:    addr,
 		opts:    o,
+		now:     time.Now,
 		closeCh: make(chan struct{}),
 	}
 	t.state.Store(int32(ConnStateDisconnected))
@@ -166,6 +172,12 @@ func (t *RemoteTransport) UnregisterEvent(ctx context.Context, name string) erro
 
 // Publish sends a message to an event.
 func (t *RemoteTransport) Publish(ctx context.Context, name string, msg transport.Message) error {
+	// Forward the message source to the server via the x-source header so the
+	// originating source survives the round trip. The server reads this header
+	// in sourceFromContext and defaults to "remote" when it is absent.
+	if src := msg.Source(); src != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-source", src)
+	}
 	return t.retry(ctx, func(ctx context.Context) error {
 		client, err := t.getClient()
 		if err != nil {
@@ -248,7 +260,7 @@ func (t *RemoteTransport) isCircuitOpen() bool {
 	if !t.circuitOpen {
 		return false
 	}
-	if time.Since(t.circuitOpenAt) > t.opts.circuitTimeout {
+	if t.now().Sub(t.circuitOpenAt) > t.opts.circuitTimeout {
 		t.circuitOpen = false
 		t.consecutiveFail = 0
 		return false
@@ -273,7 +285,7 @@ func (t *RemoteTransport) recordFailure() {
 	t.consecutiveFail++
 	if t.consecutiveFail >= t.opts.circuitThreshold {
 		t.circuitOpen = true
-		t.circuitOpenAt = time.Now()
+		t.circuitOpenAt = t.now()
 	}
 	t.circuitMu.Unlock()
 }

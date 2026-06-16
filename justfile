@@ -45,6 +45,30 @@ test-race:
 test-cover:
     go test -cover ./...
 
+# Run integration tests against a throwaway Redis (build tag `integration`).
+# Auto-detects the container runtime (prefers docker, falls back to podman) and
+# skips if neither is installed. Redis is published on host port 6399 to avoid
+# colliding with a local Redis on 6379.
+test-integration:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    runtime=""
+    for r in docker podman; do
+        if command -v "$r" >/dev/null 2>&1; then runtime="$r"; break; fi
+    done
+    if [ -z "$runtime" ]; then
+        echo "no container runtime (docker or podman) found; skipping integration tests"
+        exit 0
+    fi
+    echo "using $runtime"
+    cid=$("$runtime" run -d --rm -p 127.0.0.1:6399:6379 redis:7-alpine)
+    trap '"$runtime" rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+    for _ in $(seq 1 30); do
+        if "$runtime" exec "$cid" redis-cli ping >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    EVENT_REDIS_ADDR=127.0.0.1:6399 go test -tags integration -race ./...
+
 # Build all packages
 build:
     go build ./...
