@@ -3,7 +3,7 @@ module github.com/rbaliyan/event-server
 go 1.26.4
 
 require (
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/rbaliyan/event/v3 v3.17.4
