@@ -270,29 +270,15 @@ func TestSSESubscribe(t *testing.T) {
 		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
 	}
 
-	// Give subscription time to establish
-	time.Sleep(100 * time.Millisecond)
-
-	// Publish a message
-	_, err = svc.Publish(ctx, &eventpb.PublishRequest{
-		Event:   "sse-test",
-		Id:      "msg-sse-1",
-		Payload: []byte("hello-sse"),
-	})
-	if err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-
-	// Read SSE events (preamble + message)
+	// The preamble is emitted immediately on connect, before any publish, so no
+	// readiness wait is needed. Full message delivery is covered deterministically
+	// by TestSSE_DeliversMessage.
 	buf := make([]byte, 4096)
 	n, err := resp.Body.Read(buf)
 	if err != nil && err != io.EOF {
 		t.Fatalf("read: %v", err)
 	}
-	body := string(buf[:n])
-
-	// Should contain the preamble
-	if !strings.Contains(body, "retry: 5000") {
+	if body := string(buf[:n]); !strings.Contains(body, "retry: 5000") {
 		t.Errorf("missing SSE preamble, got: %s", body)
 	}
 }
@@ -320,37 +306,60 @@ func TestWebSocketSubscribe(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 
-	// Give subscription time to establish
-	time.Sleep(100 * time.Millisecond)
+	// Read frames in the background on the long-lived context. A per-Read
+	// timeout would close the coder/websocket connection, so readiness must not
+	// use short per-read deadlines; instead we probe-publish until a frame lands.
+	frames := make(chan wsMessage, 64)
+	go func() {
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				return
+			}
+			var m wsMessage
+			if json.Unmarshal(data, &m) == nil {
+				frames <- m
+			}
+		}
+	}()
 
-	// Publish a message
-	_, err = svc.Publish(ctx, &eventpb.PublishRequest{
+	// Readiness: publish probes until a frame arrives, proving the sub is live.
+	readyDeadline := time.After(5 * time.Second)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+ready:
+	for {
+		_, _ = svc.Publish(ctx, &eventpb.PublishRequest{Event: "ws-test", Id: "__probe__", Payload: []byte("probe")})
+		select {
+		case <-frames:
+			break ready
+		case <-tick.C:
+		case <-readyDeadline:
+			t.Fatal("WebSocket subscription did not become ready within 5s")
+		}
+	}
+
+	// Publish the real message.
+	if _, err = svc.Publish(ctx, &eventpb.PublishRequest{
 		Event:   "ws-test",
 		Id:      "msg-ws-1",
 		Payload: []byte("hello-ws"),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	// Read the message from WebSocket
-	readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	_, data, err := conn.Read(readCtx)
-	if err != nil {
-		t.Fatalf("WebSocket read: %v", err)
-	}
-
+	// Read until the real message arrives, skipping leftover probe frames.
 	var msg wsMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if msg.Type != "message" {
-		t.Errorf("type = %q, want message", msg.Type)
-	}
-	if msg.ID != "msg-ws-1" {
-		t.Errorf("id = %q, want msg-ws-1", msg.ID)
+	deadline := time.After(3 * time.Second)
+	for msg.ID != "msg-ws-1" {
+		select {
+		case m := <-frames:
+			if m.Type == "message" && m.ID == "msg-ws-1" {
+				msg = m
+			}
+		case <-deadline:
+			t.Fatal("did not receive msg-ws-1 within 3s")
+		}
 	}
 	if string(msg.Payload) != "hello-ws" {
 		t.Errorf("payload = %q, want hello-ws", string(msg.Payload))

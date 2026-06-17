@@ -22,19 +22,20 @@ Event Server (`github.com/rbaliyan/event-server`) is a gRPC-based event pub-sub 
 ## Build Commands
 
 ```bash
-just build       # go build ./...
-just test        # go test -v ./...
-just test-race   # go test -race ./...
-just lint        # golangci-lint run ./...
-just fmt         # go fmt ./...
-just tidy        # go mod tidy
-just vulncheck   # govulncheck ./...
-just proto       # Regenerate protobuf code
+just build            # go build ./...
+just test             # go test -v ./...
+just test-race        # go test -race ./...
+just test-integration # go test -tags integration -race ./... (needs docker or podman)
+just lint             # golangci-lint run ./...
+just fmt              # go fmt ./...
+just tidy             # go mod tidy
+just vulncheck        # govulncheck ./...
+just proto            # Regenerate protobuf code
 
 # Run a single test
 go test -run TestName ./package/...
 
-# CI runs: go test -v -race ./... and golangci-lint v2.8.0 with --tests=false
+# CI runs: go test -v -race ./... and golangci-lint v2.11.4 with --tests=false
 ```
 
 ## Architecture
@@ -65,7 +66,7 @@ event-server/
 Operational CLI for event-server and event-scheduler over HTTP/REST. Uses stdlib only (no extra go.mod deps). Install with `just install`.
 
 ```
-eventctl [--server http://host:port] [--scheduler http://host:port] <command>
+eventctl [--server http://host:port] [--scheduler http://host:port] [--schema http://host:port] <command>
 
 events list                     List registered events
 events pub <event> [payload]    Publish a message ("-" reads from stdin)
@@ -77,9 +78,17 @@ scheduler list                  List scheduled messages
   [-event <name>] [-limit <n>] [-before <RFC3339>] [-after <RFC3339>]
 scheduler get <id>              Get a scheduled message by ID
 scheduler health                Scheduler health check
+
+schema list                     List all event schemas
+schema get <event>              Get a schema by event name
+schema set <event> [flags]      Create or update a schema
+  [-description <s>] [-timeout <dur>] [-retries <n>] [-backoff <dur>]
+  [-monitor] [-idempotency] [-poison]
+schema delete <event>           Delete a schema
 ```
 
-The `--scheduler` flag defaults to `--server`, so when event-server and event-scheduler share a host the scheduler flag is only needed if the port differs.
+The `--scheduler` and `--schema` flags both default to `--server`, so when the
+services share a host the extra flags are only needed if the ports differ.
 
 ### Core Components
 
@@ -167,6 +176,6 @@ Package alias convention: `eventpb "github.com/rbaliyan/event-server/proto/event
 
 ## Tooling
 
-Tools managed via `.mise.toml`: Go 1.24.x, just, protoc, protoc-gen-go, protoc-gen-go-grpc, protoc-gen-grpc-gateway, govulncheck, golangci-lint v2.8.0.
+Tools managed via `.mise.toml`: Go 1.26.x, just, protoc, protoc-gen-go, protoc-gen-go-grpc, protoc-gen-grpc-gateway, govulncheck, golangci-lint v2.11.4.
 
 Linting: `.golangci.yml` v2 config with `run.tests: false`. Enabled linters: errcheck, govet, staticcheck, unused.

@@ -27,6 +27,15 @@ jobs:
       - name: Run tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Enforce coverage threshold
+        run: |
+          # Gate on hand-written, unit-tested code; exclude generated protobuf,
+          # examples, and the build-tagged integration package (no unit coverage).
+          grep -vE '/(proto|examples|integration)/' coverage.out > coverage.filtered.out
+          total=$(go tool cover -func=coverage.filtered.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "Filtered coverage: ${total}%"
+          awk -v c="$total" 'BEGIN { if (c+0 < 75.0) { printf "coverage %.1f%% is below the 75%% floor\n", c; exit 1 } }'
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -35,6 +44,33 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run integration tests
+        env:
+          EVENT_REDIS_ADDR: localhost:6379
+        run: go test -tags integration -race ./...
 
   lint:
     name: Lint

@@ -2,132 +2,56 @@ package client_test
 
 import (
 	"context"
-	"log/slog"
-	"net"
 	"testing"
 	"time"
 
 	"github.com/rbaliyan/event-server/client"
-	eventpb "github.com/rbaliyan/event-server/proto/event/v1"
-	"github.com/rbaliyan/event-server/service"
 	"github.com/rbaliyan/event/v3/transport"
-	"github.com/rbaliyan/event/v3/transport/channel"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 )
 
+// bufSize is the in-process listener buffer size shared by client test helpers.
 const bufSize = 1024 * 1024
 
-func setupServer(t *testing.T) (*grpc.ClientConn, func()) {
-	t.Helper()
-
-	ch := channel.New()
-	svc, err := service.NewService(ch,
-		service.WithSecurityGuard(service.AllowAll()),
-		service.WithLogger(slog.Default()),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-
-	lis := bufconn.Listen(bufSize)
-	srv := grpc.NewServer(
-		grpc.UnaryInterceptor(svc.UnaryInterceptor()),
-		grpc.StreamInterceptor(svc.StreamInterceptor()),
-	)
-	eventpb.RegisterEventServiceServer(srv, svc)
-	go func() { _ = srv.Serve(lis) }()
-
-	conn, err := grpc.NewClient("passthrough://bufnet",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return lis.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("failed to dial: %v", err)
-	}
-
-	cleanup := func() {
-		_ = conn.Close()
-		srv.Stop()
-		svc.Stop()
-		_ = ch.Close(context.Background())
-	}
-
-	return conn, cleanup
-}
-
-// TestRemoteTransportEndToEnd tests the full flow using a real gRPC server
-// with bufconn, going through the EventServiceClient directly.
-func TestRemoteTransportEndToEnd(t *testing.T) {
-	conn, cleanup := setupServer(t)
+// TestRemoteTransport_PublishSubscribeAck drives a real RemoteTransport end to
+// end against an in-process server: register, subscribe, publish, receive, ack.
+// (Previously this exercised the raw gRPC stub; it now covers the actual
+// transport translation layer.)
+func TestRemoteTransport_PublishSubscribeAck(t *testing.T) {
+	tr, cleanup := newConnectedTransport(t)
 	defer cleanup()
 
 	ctx := context.Background()
-	eventClient := eventpb.NewEventServiceClient(conn)
+	const event = "test.event"
 
-	// Register event via gRPC
-	_, err := eventClient.RegisterEvent(ctx, &eventpb.RegisterEventRequest{Name: "test.event"})
+	if err := tr.RegisterEvent(ctx, event); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	sub, err := tr.Subscribe(ctx, event, transport.WithStartFrom(transport.StartFromLatest))
 	if err != nil {
-		t.Fatalf("RegisterEvent failed: %v", err)
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer func() { _ = sub.Close(ctx) }()
+
+	waitReady(t, tr, sub, event)
+
+	if err := tr.Publish(ctx, event, newMessage("msg-1", "", []byte("hello"), nil)); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 
-	// Subscribe
-	subCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	stream, err := eventClient.Subscribe(subCtx, &eventpb.SubscribeRequest{
-		Event:        "test.event",
-		DeliveryMode: eventpb.DeliveryMode_DELIVERY_MODE_BROADCAST,
-		StartFrom:    eventpb.StartPosition_START_POSITION_LATEST,
-	})
-	if err != nil {
-		t.Fatalf("Subscribe failed: %v", err)
+	msg := recvKeyed(t, sub, "msg-1", 2*time.Second)
+	if string(msg.Payload()) != "hello" {
+		t.Fatalf("payload = %q, want hello", msg.Payload())
 	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Publish
-	pubResp, err := eventClient.Publish(ctx, &eventpb.PublishRequest{
-		Event:   "test.event",
-		Id:      "msg-1",
-		Payload: []byte("hello"),
-	})
-	if err != nil {
-		t.Fatalf("Publish failed: %v", err)
-	}
-	if pubResp.Id != "msg-1" {
-		t.Fatalf("expected ID msg-1, got %s", pubResp.Id)
-	}
-
-	// Receive
-	msg, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv failed: %v", err)
-	}
-	if msg.Id != "msg-1" {
-		t.Fatalf("expected message ID msg-1, got %s", msg.Id)
-	}
-	if string(msg.Payload) != "hello" {
-		t.Fatalf("expected payload hello, got %s", string(msg.Payload))
-	}
-
-	// Ack
-	_, err = eventClient.Ack(ctx, &eventpb.AckRequest{
-		Entries: []*eventpb.AckEntry{
-			{AckId: msg.AckId},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Ack failed: %v", err)
+	if err := msg.Ack(nil); err != nil {
+		t.Fatalf("Ack: %v", err)
 	}
 }
 
-// TestBuildSubscribeRequest tests the option conversion logic.
-func TestBuildSubscribeRequest(t *testing.T) {
-	// Verify the client transport implements the Transport interface
+// TestRemoteTransport_ImplementsInterface is a compile-time check that
+// RemoteTransport satisfies transport.Transport. The buildSubscribeRequest
+// option-mapping logic is covered in subscribe_request_test.go.
+func TestRemoteTransport_ImplementsInterface(t *testing.T) {
 	var _ transport.Transport = (*client.RemoteTransport)(nil)
 }
 
@@ -152,18 +76,15 @@ func TestRemoteTransportClose(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	err = rt.Close(context.Background())
-	if err != nil {
+	if err := rt.Close(context.Background()); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-
 	if rt.State() != client.ConnStateClosed {
 		t.Fatalf("expected closed, got %v", rt.State())
 	}
 
-	// Close again should be safe
-	err = rt.Close(context.Background())
-	if err != nil {
+	// Close again should be safe.
+	if err := rt.Close(context.Background()); err != nil {
 		t.Fatalf("double Close failed: %v", err)
 	}
 }

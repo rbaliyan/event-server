@@ -149,8 +149,9 @@ func TestPublishAndSubscribe(t *testing.T) {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Give subscription time to establish
-	time.Sleep(100 * time.Millisecond)
+	// Deterministically wait until the subscription is registered server-side.
+	r := readStream(stream)
+	waitReady(t, client, r, "orders")
 
 	// Publish a message
 	pubResp, err := client.Publish(ctx, &eventpb.PublishRequest{
@@ -167,15 +168,9 @@ func TestPublishAndSubscribe(t *testing.T) {
 		t.Fatal("expected non-empty message ID")
 	}
 
-	// Receive the message
-	msg, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv failed: %v", err)
-	}
+	// Receive the message (recvUntil matches by ID, skipping readiness probes).
+	msg := recvUntil(t, r, pubResp.Id, 3*time.Second)
 
-	if msg.Id != pubResp.Id {
-		t.Fatalf("expected message ID %s, got %s", pubResp.Id, msg.Id)
-	}
 	if string(msg.Payload) != `{"id":"order-1"}` {
 		t.Fatalf("expected payload %q, got %q", `{"id":"order-1"}`, string(msg.Payload))
 	}
@@ -352,9 +347,10 @@ func TestAckTimeout(t *testing.T) {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	r := readStream(stream)
+	waitReady(t, client, r, "timeout-test")
 
-	_, err = client.Publish(ctx, &eventpb.PublishRequest{
+	pubResp, err := client.Publish(ctx, &eventpb.PublishRequest{
 		Event:   "timeout-test",
 		Payload: []byte("test"),
 	})
@@ -362,19 +358,15 @@ func TestAckTimeout(t *testing.T) {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
-	// Receive message but don't ack it
-	msg, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv failed: %v", err)
-	}
+	// Receive the message but do not ack it.
+	msg := recvUntil(t, r, pubResp.Id, 3*time.Second)
 	if msg.AckId == "" {
 		t.Fatal("expected non-empty ack_id")
 	}
 
-	// Wait for ack timeout (the ack tracker will nack stale entries)
-	time.Sleep(time.Second)
-
-	// Try to ack after timeout - should return ok but not find the entry
+	// A late Ack (after the entry may have been reaped) must be idempotent: no
+	// error whether or not the entry still exists. Deterministic reaping is
+	// covered by TestAckTracker_ReapStaleEntries.
 	_, err = client.Ack(ctx, &eventpb.AckRequest{
 		Entries: []*eventpb.AckEntry{
 			{AckId: msg.AckId},
@@ -611,9 +603,10 @@ func TestSubscribeStreamClose_PendingAckNacked(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond) // let subscription establish
+	r := readStream(stream)
+	waitReady(t, client, r, "close-test")
 
-	_, err = client.Publish(ctx, &eventpb.PublishRequest{
+	pubResp, err := client.Publish(ctx, &eventpb.PublishRequest{
 		Event:   "close-test",
 		Payload: []byte(`"x"`),
 	})
@@ -621,21 +614,18 @@ func TestSubscribeStreamClose_PendingAckNacked(t *testing.T) {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	msg, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("Recv: %v", err)
-	}
+	msg := recvUntil(t, r, pubResp.Id, 3*time.Second)
 	ackID := msg.AckId
 	if ackID == "" {
 		t.Fatal("expected non-empty ack_id")
 	}
 
-	// Cancel the stream — triggers NackStream(streamID, errStreamClosed) on the server.
+	// Cancel the stream — triggers NackStream(streamID, errStreamClosed) on the
+	// server. Scoped nacking itself is covered by TestAckTracker_NackStreamScopesToStream.
 	cancel()
-	time.Sleep(100 * time.Millisecond) // allow NackStream to complete
 
-	// Ack after stream close: the ack_id was already consumed by NackStream.
-	// The Ack RPC must remain idempotent — no error, no panic.
+	// Ack after stream close must remain idempotent — no error, no panic —
+	// whether or not NackStream has already consumed the ack_id.
 	_, err = client.Ack(ctx, &eventpb.AckRequest{
 		Entries: []*eventpb.AckEntry{{AckId: ackID}},
 	})

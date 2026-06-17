@@ -31,6 +31,10 @@ A **gRPC event server** that bridges the [event/v3](https://github.com/rbaliyan/
 - Health endpoint with transport status and latency
 - Panic recovery interceptors
 - Request/error logging interceptors
+- **OpenTelemetry metrics** emitted via the global `MeterProvider` (no-op until you register an exporter):
+  `event_server.publishes_total`, `event_server.publish_duration_seconds`,
+  `event_server.subscribe_streams_active`, `event_server.messages_sent_total`,
+  `event_server.acks_total`
 
 ## Installation
 
@@ -341,6 +345,12 @@ remote.State()      // ConnStateDisconnected|Connecting|Connected|Closed
 remote.Close(ctx)   // Graceful shutdown
 ```
 
+The transport maps gRPC status codes back to the standard `transport` sentinels
+(`ErrEventNotRegistered`, `ErrTransportClosed`, `ErrPublishTimeout`, …) so callers
+can use `errors.Is`. Permission failures surface as `*client.PermissionDeniedError`
+(matches `errors.Is(err, client.ErrPermissionDenied)`); other non-standard codes
+surface as `*client.RemoteError` carrying the original `codes.Code` and message.
+
 ### `gateway` - HTTP Handler
 
 ```go
@@ -360,6 +370,33 @@ handler, err := gateway.NewInProcessHandler(ctx, svc,
     gateway.WithWSOriginPatterns("example.com"),
 )
 ```
+
+## CLI (eventctl)
+
+`eventctl` is an operational CLI for event-server, event-scheduler, and the schema
+registry over their HTTP/REST gateways. It uses the standard library only. Install
+with `just install` (or `go install ./cmd/eventctl`).
+
+```bash
+eventctl [--server http://host:port] [--scheduler http://host:port] [--schema http://host:port] <command>
+
+events list                  # list registered events
+events pub <event> [payload] # publish a message ("-" reads payload from stdin)
+events sub <event>           # subscribe and stream messages over SSE (ctrl+c to stop)
+events health                # server health check
+
+scheduler list               # list scheduled messages (-event/-limit/-before/-after)
+scheduler get <id>           # get a scheduled message by ID
+scheduler health             # scheduler health check
+
+schema list                  # list event schemas
+schema get <event>           # get a schema
+schema set <event> [flags]   # create/update a schema (-monitor/-idempotency/-poison/-timeout/...)
+schema delete <event>        # delete a schema
+```
+
+The `--scheduler` and `--schema` flags default to `--server`, so the extra flags
+are only needed when the services listen on different ports.
 
 ## Deployment Modes
 
@@ -418,17 +455,32 @@ mise install
 ### Commands
 
 ```bash
-just build       # go build ./...
-just test        # go test -v ./...
-just test-race   # go test -race ./...
-just test-cover  # go test -cover ./...
-just lint        # golangci-lint run ./...
-just fmt         # go fmt ./...
-just tidy        # go mod tidy
-just vulncheck   # govulncheck ./...
-just proto       # Regenerate protobuf code
-just release     # Tag and push a new patch release
+just build            # go build ./...
+just test             # go test -v ./...
+just test-race        # go test -race ./...
+just test-cover       # go test -cover ./...
+just test-integration # go test -tags integration -race ./... (needs docker or podman)
+just lint             # golangci-lint run ./...
+just fmt              # go fmt ./...
+just tidy             # go mod tidy
+just vulncheck        # govulncheck ./...
+just proto            # Regenerate protobuf code
+just release          # Tag and push a new patch release
 ```
+
+### Integration Tests
+
+End-to-end tests that run the full stack against a real backend live behind the
+`integration` build tag and read the backend address from `EVENT_REDIS_ADDR`:
+
+```bash
+just test-integration
+```
+
+The recipe provisions a throwaway Redis (auto-detecting **docker**, falling back
+to **podman**), exports `EVENT_REDIS_ADDR`, and runs the tagged tests. In CI a
+GitHub Actions `services: redis` container provides the address. Tests skip
+cleanly when `EVENT_REDIS_ADDR` is unset (e.g. no container runtime installed).
 
 ### Protobuf Generation
 
