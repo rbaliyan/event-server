@@ -456,6 +456,7 @@ mise install
 
 ```bash
 just build            # go build ./...
+just smoke            # fast pre-merge gate: go test -tags smoke -race ./smoke/...
 just test             # go test -v ./...
 just test-race        # go test -race ./...
 just test-cover       # go test -cover ./...
@@ -477,10 +478,13 @@ End-to-end tests that run the full stack against a real backend live behind the
 just test-integration
 ```
 
-The recipe provisions a throwaway Redis (auto-detecting **docker**, falling back
-to **podman**), exports `EVENT_REDIS_ADDR`, and runs the tagged tests. In CI a
-GitHub Actions `services: redis` container provides the address. Tests skip
-cleanly when `EVENT_REDIS_ADDR` is unset (e.g. no container runtime installed).
+The recipe provisions throwaway **Redis** and **NATS JetStream** containers
+(auto-detecting **docker**, falling back to **podman**), exports
+`EVENT_REDIS_ADDR` / `EVENT_NATS_URL`, and runs the tagged tests. The shared
+scenario suite (round-trip, ordering, worker-pool, broadcast) runs against every
+configured backend, proving the server is backend-agnostic. In CI the backends
+are provided as service/step containers. Tests skip cleanly when the env vars
+are unset (e.g. no container runtime installed).
 
 ### Protobuf Generation
 

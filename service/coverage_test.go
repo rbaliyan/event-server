@@ -8,6 +8,8 @@ import (
 
 	eventpb "github.com/rbaliyan/event-server/proto/event/v1"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // streamReader pumps a server-streaming Subscribe into channels so tests can
@@ -306,6 +308,47 @@ func TestConcurrentPublishers(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("received %d/%d messages before timeout", len(seen), total)
 		}
+	}
+}
+
+// TestSubscribe_OptionBranches exercises every option-translation branch in the
+// server's Subscribe handler (delivery mode, start position, max age, latest
+// only, buffer size, consumer id) by opening a live subscription for each and
+// confirming it reaches the delivery loop via a probe round-trip.
+func TestSubscribe_OptionBranches(t *testing.T) {
+	client, cleanup := setup(t)
+	defer cleanup()
+	ctx := context.Background()
+	const event = "opts.evt"
+
+	if _, err := client.RegisterEvent(ctx, &eventpb.RegisterEventRequest{Name: event}); err != nil {
+		t.Fatalf("RegisterEvent: %v", err)
+	}
+
+	reqs := map[string]*eventpb.SubscribeRequest{
+		"beginning":   {Event: event, StartFrom: eventpb.StartPosition_START_POSITION_BEGINNING},
+		"latest":      {Event: event, StartFrom: eventpb.StartPosition_START_POSITION_LATEST},
+		"timestamp":   {Event: event, StartFrom: eventpb.StartPosition_START_POSITION_TIMESTAMP, StartTime: timestamppb.Now()},
+		"max_age":     {Event: event, MaxAge: durationpb.New(time.Hour)},
+		"latest_only": {Event: event, LatestOnly: true},
+		"buffer_size": {Event: event, BufferSize: 16},
+		"consumer_id": {Event: event, ConsumerId: "consumer-1"},
+		"broadcast":   {Event: event, DeliveryMode: eventpb.DeliveryMode_DELIVERY_MODE_BROADCAST},
+	}
+
+	for name, req := range reqs {
+		t.Run(name, func(t *testing.T) {
+			subCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			stream, err := client.Subscribe(subCtx, req)
+			if err != nil {
+				t.Fatalf("Subscribe(%s): %v", name, err)
+			}
+			r := readStream(stream)
+			// waitReady proves the handler built options and reached the
+			// delivery loop without erroring.
+			waitReady(t, client, r, event)
+		})
 	}
 }
 
