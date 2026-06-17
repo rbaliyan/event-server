@@ -23,6 +23,7 @@ Event Server (`github.com/rbaliyan/event-server`) is a gRPC-based event pub-sub 
 
 ```bash
 just build            # go build ./...
+just smoke            # fast pre-merge gate (build tag smoke, ~2s, no deps)
 just test             # go test -v ./...
 just test-race        # go test -race ./...
 just test-integration # go test -tags integration -race ./... (needs docker or podman)
@@ -35,7 +36,9 @@ just proto            # Regenerate protobuf code
 # Run a single test
 go test -run TestName ./package/...
 
-# CI runs: go test -v -race ./... and golangci-lint v2.11.4 with --tests=false
+# CI: a fast `smoke` gate runs first; then test (-race, with an 80% coverage
+# floor on hand-written code), integration (redis service + a NATS JetStream step), and golangci-lint
+# v2.11.4 with --tests=false.
 ```
 
 ## Architecture
@@ -45,8 +48,8 @@ go test -run TestName ./package/...
 ```
 event-server/
 ├── cmd/
-│   └── eventctl/    # CLI tool: events + scheduler operations over REST
-├── service/     # gRPC EventService implementation (authorizer, ack tracker, interceptors)
+│   └── eventctl/    # CLI tool: events + scheduler + schema operations over REST
+├── service/     # gRPC EventService implementation (SecurityGuard, ack tracker, interceptors)
 ├── client/      # RemoteTransport implementing transport.Transport
 ├── gateway/     # HTTP handler: gRPC-Gateway (REST) + WebSocket + SSE
 ├── proto/       # Protobuf definitions and generated code
@@ -63,7 +66,7 @@ event-server/
 
 ### eventctl CLI (`cmd/eventctl`)
 
-Operational CLI for event-server and event-scheduler over HTTP/REST. Uses stdlib only (no extra go.mod deps). Install with `just install`.
+Operational CLI for event-server, event-scheduler, and the schema registry over HTTP/REST. Uses stdlib only (no extra go.mod deps). Install with `just install`.
 
 ```
 eventctl [--server http://host:port] [--scheduler http://host:port] [--schema http://host:port] <command>
@@ -149,7 +152,7 @@ type options struct { /* unexported fields */ }
 ### Key Design Decisions
 
 - **Ack-over-RPC** (not bidirectional streaming): Subscribe is server-streaming; acks go through a separate Ack RPC. This simplifies the protocol and allows batch acking.
-- **DenyAll default authorizer**: Forces explicit authorization configuration.
+- **DenyAll default guard**: Forces explicit authorization configuration.
 - **In-process gateway mode**: `NewInProcessHandler` calls the service directly without gRPC serialization overhead. Useful for embedded deployments.
 - **Source from metadata**: `x-source` gRPC metadata header sets the message source; defaults to "remote".
 

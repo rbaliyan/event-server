@@ -41,14 +41,19 @@ test:
 test-race:
     go test -race ./...
 
+# Fast pre-merge smoke gate: one in-process round trip per entry point (~2s,
+# no external services). Build tag `smoke`.
+smoke:
+    go test -tags smoke -race ./smoke/...
+
 # Run tests with coverage
 test-cover:
     go test -cover ./...
 
-# Run integration tests against a throwaway Redis (build tag `integration`).
+# Run integration tests against throwaway Redis + NATS (build tag `integration`).
 # Auto-detects the container runtime (prefers docker, falls back to podman) and
-# skips if neither is installed. Redis is published on host port 6399 to avoid
-# colliding with a local Redis on 6379.
+# skips if neither is installed. Redis is on host port 6399 (avoids a local
+# 6379) and NATS JetStream on 4222.
 test-integration:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -61,13 +66,18 @@ test-integration:
         exit 0
     fi
     echo "using $runtime"
-    cid=$("$runtime" run -d --rm -p 127.0.0.1:6399:6379 redis:7-alpine)
-    trap '"$runtime" rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+    rcid=$("$runtime" run -d --rm -p 127.0.0.1:6399:6379 redis:7-alpine)
+    ncid=$("$runtime" run -d --rm -p 127.0.0.1:4222:4222 nats:latest -js)
+    trap '"$runtime" rm -f "$rcid" "$ncid" >/dev/null 2>&1 || true' EXIT
     for _ in $(seq 1 30); do
-        if "$runtime" exec "$cid" redis-cli ping >/dev/null 2>&1; then break; fi
+        if "$runtime" exec "$rcid" redis-cli ping >/dev/null 2>&1; then break; fi
         sleep 1
     done
-    EVENT_REDIS_ADDR=127.0.0.1:6399 go test -tags integration -race ./...
+    for _ in $(seq 1 30); do
+        if (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+        sleep 1
+    done
+    EVENT_REDIS_ADDR=127.0.0.1:6399 EVENT_NATS_URL=nats://127.0.0.1:4222 go test -tags integration -race ./...
 
 # Build all packages
 build:

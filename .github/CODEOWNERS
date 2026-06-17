@@ -1,0 +1,6 @@
+# Ownership of the test gates and CI configuration so changes to the
+# fast smoke gate, the integration suite, and the workflow definitions
+# get an explicit review.
+/smoke/             @rbaliyan
+/integration/       @rbaliyan
+/.github/workflows/ @rbaliyan

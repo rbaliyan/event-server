@@ -9,8 +9,26 @@ on:
 permissions: read-all
 
 jobs:
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run smoke gate
+        # Fast, dependency-free round trip per entry point. Gates the heavier
+        # jobs below so obvious breakage fails in seconds.
+        run: go test -tags smoke -race ./smoke/...
+
   test:
     name: Test
+    needs: smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -30,11 +48,12 @@ jobs:
       - name: Enforce coverage threshold
         run: |
           # Gate on hand-written, unit-tested code; exclude generated protobuf,
-          # examples, and the build-tagged integration package (no unit coverage).
-          grep -vE '/(proto|examples|integration)/' coverage.out > coverage.filtered.out
+          # examples, and the build-tagged integration/smoke packages (no unit
+          # coverage in the default build).
+          grep -vE '/(proto|examples|integration|smoke)/' coverage.out > coverage.filtered.out
           total=$(go tool cover -func=coverage.filtered.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "Filtered coverage: ${total}%"
-          awk -v c="$total" 'BEGIN { if (c+0 < 75.0) { printf "coverage %.1f%% is below the 75%% floor\n", c; exit 1 } }'
+          awk -v c="$total" 'BEGIN { if (c+0 < 80.0) { printf "coverage %.1f%% is below the 80%% floor\n", c; exit 1 } }'
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
@@ -47,6 +66,7 @@ jobs:
 
   integration:
     name: Integration
+    needs: smoke
     runs-on: ubuntu-latest
     services:
       redis:
@@ -67,13 +87,24 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Start NATS JetStream
+        # services: can't pass the `-js` flag, so run NATS as a step.
+        run: |
+          docker run -d --rm --name nats -p 4222:4222 nats:latest -js
+          for _ in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null && { exec 3>&- 3<&-; break; }
+            sleep 1
+          done
+
       - name: Run integration tests
         env:
           EVENT_REDIS_ADDR: localhost:6379
+          EVENT_NATS_URL: nats://localhost:4222
         run: go test -tags integration -race ./...
 
   lint:
     name: Lint
+    needs: smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -92,6 +123,7 @@ jobs:
 
   codeql:
     name: CodeQL Analysis
+    needs: smoke
     runs-on: ubuntu-latest
     permissions:
       security-events: write
