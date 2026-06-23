@@ -27,37 +27,58 @@ func TestRedis_ErrorMapping(t *testing.T) {
 	}
 }
 
-// TestRedis_NackRedelivery verifies that an un-acked (nacked) message is
-// redelivered via the Redis Streams pending-entries claim loop.
+// TestRedis_NackRedelivery verifies that a message left un-acked (nacked) by one
+// worker is redelivered to another worker in the same group via the Redis
+// Streams pending-entries claim loop (XCLAIM of orphaned entries).
+//
+// Redis Streams only reclaims a pending entry on behalf of a *different*
+// consumer: the claim loop deliberately skips entries it already owns, and a
+// consumer's own un-acked entries are re-read only once at subscription start
+// (restart recovery). So redelivery to a live consumer requires a second worker
+// in the same group — the real "stalled/crashed worker, peer takes over"
+// scenario.
 func TestRedis_NackRedelivery(t *testing.T) {
-	// Short claim interval so the reclaim happens quickly.
+	// Short claim interval and idle so the reclaim happens quickly.
 	tr, event, ctx := setup(t, redistransport.WithClaimInterval(500*time.Millisecond, 500*time.Millisecond))
 
-	// Publish before subscribing, then read the backlog from a stable worker
-	// group — this avoids racing the consumer-group creation and gives a single
-	// deterministic message to nack and observe being redelivered.
+	// Publish before subscribing so the single backlog message is delivered to
+	// the first worker deterministically (no consumer-group creation race, and
+	// the second worker does not yet exist to compete for it).
 	if err := tr.Publish(ctx, event, newMessage("nr-1", "p", []byte("x"), nil)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
-	sub, err := tr.Subscribe(ctx, event,
+	// Worker 1 reads the backlog and nacks — the entry stays pending in the
+	// shared group's PEL, owned by worker 1's consumer.
+	worker1, err := tr.Subscribe(ctx, event,
 		transport.WithDeliveryMode(transport.WorkerPool),
 		transport.WithWorkerGroup("redeliver"),
 		transport.WithStartFrom(transport.StartFromBeginning),
 	)
 	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
+		t.Fatalf("Subscribe worker 1: %v", err)
 	}
-	defer func() { _ = sub.Close(ctx) }()
+	defer func() { _ = worker1.Close(ctx) }()
 
-	// First delivery: nack it (ack with an error leaves it pending).
-	first := recvKeyedNoAck(t, sub, "nr-1", 5*time.Second)
+	first := recvKeyedNoAck(t, worker1, "nr-1", 5*time.Second)
 	if err := first.Ack(context.DeadlineExceeded); err != nil {
 		t.Fatalf("nack: %v", err)
 	}
 
-	// The claim loop must redeliver the same message.
-	redelivered := recvKeyedNoAck(t, sub, "nr-1", 10*time.Second)
+	// Worker 2 joins the same group. Its claim loop reclaims the entry worker 1
+	// left idle in the PEL (XCLAIM transfers ownership across consumers) and
+	// redelivers it.
+	worker2, err := tr.Subscribe(ctx, event,
+		transport.WithDeliveryMode(transport.WorkerPool),
+		transport.WithWorkerGroup("redeliver"),
+		transport.WithStartFrom(transport.StartFromBeginning),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe worker 2: %v", err)
+	}
+	defer func() { _ = worker2.Close(ctx) }()
+
+	redelivered := recvKeyedNoAck(t, worker2, "nr-1", 10*time.Second)
 	if err := redelivered.Ack(nil); err != nil {
 		t.Fatalf("ack redelivered: %v", err)
 	}
