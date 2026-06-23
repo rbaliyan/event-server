@@ -105,6 +105,19 @@ func newRemoteWSHandler(client eventpb.EventServiceClient, heartbeat time.Durati
 
 			case msg, ok := <-msgCh:
 				if !ok {
+					// The stream goroutine sends its result to errCh before
+					// closing msgCh, so both become ready together and select
+					// may pick this case first. Surface any stream error before
+					// tearing down, otherwise the error frame would be lost.
+					// Guard with ctx.Done: the goroutine may instead exit via
+					// cancellation without sending to errCh.
+					select {
+					case err := <-errCh:
+						if err != io.EOF {
+							writeWSError(ctx, conn, fmt.Sprintf("stream error: %v", err))
+						}
+					case <-ctx.Done():
+					}
 					cancel()
 					<-hbDone
 					return
@@ -211,6 +224,18 @@ func newInProcessWSHandler(svc eventpb.EventServiceServer, heartbeat time.Durati
 
 			case msg, ok := <-msgCh:
 				if !ok {
+					// The subscribe goroutine sends its result to errCh before
+					// closing msgCh, so both become ready together and select
+					// may pick this case first. Surface any subscribe error
+					// before tearing down, otherwise the error frame would be
+					// lost. Guard with ctx.Done for the cancellation path.
+					select {
+					case err := <-errCh:
+						if err != nil && ctx.Err() == nil {
+							writeWSError(ctx, conn, fmt.Sprintf("subscribe error: %v", err))
+						}
+					case <-ctx.Done():
+					}
 					cancel()
 					<-hbDone
 					return
