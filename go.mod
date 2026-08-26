@@ -1,6 +1,6 @@
 module github.com/rbaliyan/event-server
 
-go 1.26.5
+go 1.26.7
 
 require (
 	github.com/coder/websocket v1.8.15
